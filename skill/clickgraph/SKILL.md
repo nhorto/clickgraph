@@ -75,6 +75,32 @@ A diff whose only regression is "the entry page now looks like a login screen"
 means the session expired, not that the app broke. Say so, and ask for a fresh
 `login` run rather than chasing it as a bug.
 
+## Forms
+
+A form is only proven by filling it in and submitting it. Clicking its submit
+button with the fields empty tests nothing — the browser refuses the submission
+and no code runs — so by default forms are reported as skipped, with the reason,
+and never as working.
+
+`--fill-forms` fills every field with obviously synthetic values (they all
+contain `clickgraph-test`) and submits. That writes real data, so treat it the
+way you treat `--allow-dangerous`:
+
+- Use it when the thing you just built **is** a form, against a local dev server
+  whose data does not matter.
+- Ask the user first for anything shared, staged, or pointed at a real database.
+- Never use it to get past a login screen. Password fields are never typed into,
+  and a form containing one is skipped whole — a wrong password is a failed
+  sign-in attempt, which means rate limiting or a locked account.
+
+```bash
+npx clickgraph walk http://localhost:5173 --fill-forms --json
+```
+
+A submitted form that comes back `no-effect` is the finding this is for: it
+accepted what you typed and did nothing with it. Rows the run created are
+greppable by `clickgraph-test`; say so if the user may need to clean them up.
+
 ## Reading the verdict
 
 `--json` prints a compact object, not the whole graph. Read `ok` and `verdict`
@@ -130,7 +156,8 @@ you did not touch are worth surfacing, not silently rewriting.
 
 ## What it cannot do yet
 
-Clicks and hovers only. It does not type into fields, and a `<select>` is
-reported as skipped rather than tested, because clicking one can never change
-anything. Anything reachable only by filling in a form is outside what a run
-proves.
+It clicks, hovers, chooses from a `<select>`, and — with `--fill-forms` — fills
+and submits a real `<form>`. It does not drive anything else: a field cluster
+that is not inside a `<form>` element, a drag, a canvas, a file upload, or a
+multi-step wizard that needs a specific value to advance. Those come back as
+skipped, which means untested, not working.
