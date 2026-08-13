@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.uigraph/
+*.log
+.DS_Store
+
+# App Atlas keeps its map here. Local to this machine.
+.app-atlas/
