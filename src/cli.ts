@@ -1,0 +1,147 @@
+#!/usr/bin/env node
+import { walk } from './walker.js';
+import { DEFAULT_GRAPH_PATH, diffGraphs, loadGraph, saveGraph } from './graph.js';
+import { reportDiff, reportWalk } from './report.js';
+
+interface Args {
+  command: string;
+  url?: string;
+  out: string;
+  json: boolean;
+  quiet: boolean;
+  maxStates?: number;
+  maxActions?: number;
+  maxDepth?: number;
+  settleMs?: number;
+  allowDangerous: boolean;
+}
+
+function parseArgs(argv: string[]): Args {
+  const args: Args = {
+    command: argv[0] ?? 'help',
+    out: DEFAULT_GRAPH_PATH,
+    json: false,
+    quiet: false,
+    allowDangerous: false,
+  };
+  const rest = argv.slice(1);
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === '--json') args.json = true;
+    else if (arg === '--quiet') args.quiet = true;
+    else if (arg === '--allow-dangerous') args.allowDangerous = true;
+    else if (arg === '--out' || arg === '--baseline') args.out = rest[++i];
+    else if (arg === '--max-states') args.maxStates = Number(rest[++i]);
+    else if (arg === '--max-actions') args.maxActions = Number(rest[++i]);
+    else if (arg === '--max-depth') args.maxDepth = Number(rest[++i]);
+    else if (arg === '--settle') args.settleMs = Number(rest[++i]);
+    else if (!arg.startsWith('-')) args.url = arg;
+  }
+  return args;
+}
+
+const HELP = `
+clickgraph — walk a running web app, graph what its controls actually do
+
+  clickgraph walk <url>     explore the app and write the baseline graph
+  clickgraph diff <url>     re-walk and compare against the baseline
+  clickgraph show           print the stored graph
+
+Options
+  --out <path>          graph file (default ${DEFAULT_GRAPH_PATH})
+  --baseline <path>     alias of --out, for diff
+  --max-states <n>      stop after n distinct states (default 40)
+  --max-actions <n>     stop after n clicks (default 200)
+  --max-depth <n>       how many clicks deep to explore (default 4)
+  --settle <ms>         quiet period with no DOM changes that counts as
+                        settled (default 250; raise if your app updates late
+                        and working controls look dead)
+  --allow-dangerous     also click delete / logout / pay controls (off by default)
+  --json                machine-readable output
+  --quiet               suppress progress lines
+
+Exit codes
+  0  healthy: no regressions, and the app loaded cleanly
+  1  regressions found (diff), or the app errored on load / offered
+     nothing to walk (walk)
+  2  usage or runtime error
+`;
+
+async function main(): Promise<number> {
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.command === 'help' || args.command === '--help' || args.command === '-h') {
+    console.log(HELP);
+    return 0;
+  }
+
+  const walkOptions = {
+    maxStates: args.maxStates,
+    maxActions: args.maxActions,
+    maxDepth: args.maxDepth,
+    settleMs: args.settleMs,
+    allowDangerous: args.allowDangerous,
+    onProgress: args.quiet || args.json ? undefined : (m: string) => console.error(`  ${m}`),
+  };
+
+  if (args.command === 'walk') {
+    if (!args.url) {
+      console.error('error: walk needs a url\n' + HELP);
+      return 2;
+    }
+    const graph = await walk(args.url, walkOptions);
+    saveGraph(graph, args.out);
+    if (args.json) console.log(JSON.stringify(graph, null, 2));
+    else {
+      console.log(reportWalk(graph));
+      console.log(`  baseline written to ${args.out}\n`);
+    }
+    // A baseline taken from an app that errors on load, or that offered nothing
+    // to walk, is not a baseline worth trusting — say so in the exit code.
+    // Same rule as during the walk: server errors and JavaScript errors are
+    // real, an incidental 404 on load is not worth failing a baseline over.
+    const unhealthy =
+      graph.load.httpErrors.some((e) => /^5\d\d /.test(e)) ||
+      graph.load.consoleErrors.length > 0 ||
+      graph.coverage.edgesWalked === 0;
+    return unhealthy ? 1 : 0;
+  }
+
+  if (args.command === 'diff') {
+    if (!args.url) {
+      console.error('error: diff needs a url\n' + HELP);
+      return 2;
+    }
+    const baseline = loadGraph(args.out);
+    if (!baseline) {
+      console.error(`error: no baseline at ${args.out} — run 'clickgraph walk <url>' first`);
+      return 2;
+    }
+    const current = await walk(args.url, walkOptions);
+    const diff = diffGraphs(baseline, current);
+    if (args.json) console.log(JSON.stringify(diff, null, 2));
+    else console.log(reportDiff(diff));
+    return diff.changes.some((ch) => ch.severity === 'regression') ? 1 : 0;
+  }
+
+  if (args.command === 'show') {
+    const graph = loadGraph(args.out);
+    if (!graph) {
+      console.error(`error: no graph at ${args.out}`);
+      return 2;
+    }
+    if (args.json) console.log(JSON.stringify(graph, null, 2));
+    else console.log(reportWalk(graph));
+    return 0;
+  }
+
+  console.error(`error: unknown command '${args.command}'\n` + HELP);
+  return 2;
+}
+
+main()
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  });
