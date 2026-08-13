@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Change, GraphDiff, UIEdge, UIGraph, OutcomeKind } from './types.js';
+import type { Action, Change, GraphDiff, UIEdge, UIGraph, OutcomeKind } from './types.js';
 import { normalizeText } from './fingerprint.js';
 
 export const DEFAULT_GRAPH_PATH = '.uigraph/graph.json';
@@ -50,8 +50,24 @@ export function nodeLabel(graph: UIGraph, nodeId: string): string {
   return node.fingerprint.route;
 }
 
+/**
+ * The control, plus what was actually done to it when a bare click would
+ * misdescribe the test. A submit button reported as doing nothing means one
+ * thing if the form behind it was filled in and quite another if it was not, and
+ * the label is the only place a reader finds out which.
+ */
+export function actionLabel(action: Action): string {
+  if (action.kind === 'fill') {
+    return `${action.selector.label} (form filled: ${action.fill?.length ?? 0} field(s))`;
+  }
+  if (action.kind === 'select' && action.value) {
+    return `${action.selector.label} set to "${action.value}"`;
+  }
+  return action.selector.label;
+}
+
 function describe(edge: UIEdge, graph: UIGraph): string {
-  return `${edge.action.selector.label} on ${nodeLabel(graph, edge.from)}`;
+  return `${actionLabel(edge.action)} on ${nodeLabel(graph, edge.from)}`;
 }
 
 export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {

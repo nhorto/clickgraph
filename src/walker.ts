@@ -7,6 +7,7 @@ import type {
 import { GRAPH_VERSION } from './types.js';
 import { ActionWatch, captureState, classifyOutcome, resolve, type PageSnapshot } from './observer.js';
 import { normalizeText } from './fingerprint.js';
+import { refusesFill, synthesize } from './formfill.js';
 
 /**
  * A control that leads to state X does nothing when clicked from state X — it
@@ -60,6 +61,7 @@ const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
   /** Quiet period with no DOM mutations that counts as "the page has settled". */
   settleMs: 250,
   allowDangerous: false,
+  fillForms: false,
 };
 
 /**
@@ -293,6 +295,15 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       const path = queuedPaths.get(state.nodeId) ?? [];
       log(`state ${state.fingerprint.route} (${state.elements.length} controls)`);
 
+      // Forms whose submit button is on screen. Their fields are exercised by
+      // the submit, not one at a time — a form with no submit in reach has no
+      // such action to belong to, so its fields fall back to being skipped.
+      const submittable = new Set(
+        state.elements
+          .filter((e) => e.formSubmit && e.formId && !e.disabled)
+          .map((e) => e.formId as string),
+      );
+
       /** Where the browser actually is right now, or null if unknown. */
       let atSnapshot: PageSnapshot | null = null;
 
@@ -322,6 +333,10 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           continue;
         }
         if (isTextEntry(el)) {
+          // Not skipped — this field gets a value when its form is submitted
+          // below, which is the only context in which typing into it proves
+          // anything.
+          if (config.fillForms && el.formId && submittable.has(el.formId)) continue;
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
             reason: 'needs-input',
@@ -364,6 +379,62 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           }
         }
 
+        // Fill the whole form, then submit it, as one action. Typing into a
+        // single field and stopping there proves nothing: the value is not part
+        // of the state fingerprint, so a working field looks inert, and the
+        // walker returns to the start before any submit could use what was
+        // typed. Opt-in, because a submission that succeeds writes real data.
+        const filled: { label: string; value: string }[] = [];
+        if (config.fillForms && el.formSubmit && el.formId) {
+          const fields = state.elements.filter(
+            (f) =>
+              f !== el && f.formId === el.formId && !f.disabled &&
+              (isTextEntry(f) || f.tag === 'select'),
+          );
+          // One refusing field stops the whole form. Submitting it with that
+          // field deliberately blank would test something nobody asked for.
+          const refusal = fields.map(refusesFill).find((r) => r !== null);
+          if (refusal) {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label,
+              reason: 'needs-input',
+              detail: `${refusal} (${fields.length} field(s) left unfilled)`,
+            });
+            continue;
+          }
+
+          let unfillable: string | null = null;
+          for (const field of fields) {
+            try {
+              if (field.tag === 'select') {
+                const opt = await pickOption(page, field.selector);
+                if (!opt) continue; // nothing else to choose; leave it as it stands
+                await resolve(page, field.selector).selectOption(opt.value, { timeout: 5000 });
+                filled.push({ label: field.selector.label, value: opt.label });
+              } else {
+                const value = synthesize(field);
+                await resolve(page, field.selector).fill(value, { timeout: 5000 });
+                filled.push({ label: field.selector.label, value });
+              }
+            } catch {
+              unfillable = field.selector.label;
+              break;
+            }
+          }
+          if (unfillable) {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label,
+              reason: 'needs-input',
+              detail: `could not type into ${unfillable}, so the form was left alone`,
+            });
+            continue;
+          }
+          // Re-read the page so the outcome measures the submit alone. An app
+          // with live validation redraws while a field is being typed into, and
+          // that redraw would otherwise be credited to the submit button.
+          if (filled.length > 0) atSnapshot = await captureState(page);
+        }
+
         // Clicking the submit button of a form the browser will not accept
         // tests nothing: native validation refuses the submission and changes
         // no DOM, so a working control reads as dead. Left unhandled, every
@@ -372,7 +443,10 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
             reason: 'needs-input',
-            detail: 'the form is not filled in, so the browser refuses to submit it',
+            detail: filled.length > 0
+              ? `still invalid after filling ${filled.length} field(s) — it needs something ` +
+                'that cannot be synthesized'
+              : 'the form is not filled in, so the browser refuses to submit it',
           });
           continue;
         }
@@ -383,7 +457,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
               kind: 'select', selector: el.selector, role: el.role, name: el.name,
               value: choice.label,
             }
-          : { kind: 'click', selector: el.selector, role: el.role, name: el.name };
+          : filled.length > 0
+            ? {
+                kind: 'fill', selector: el.selector, role: el.role, name: el.name,
+                fill: filled,
+              }
+            : { kind: 'click', selector: el.selector, role: el.role, name: el.name };
 
         const watch = new ActionWatch(page);
         let clickFailed = false;

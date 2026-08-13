@@ -45,7 +45,7 @@ export interface ElementDescriptor {
 }
 
 export interface Action {
-  kind: 'click' | 'hover' | 'select';
+  kind: 'click' | 'hover' | 'select' | 'fill';
   selector: Selector;
   role: string;
   name: string;
@@ -55,6 +55,12 @@ export interface Action {
    * that offers different names this week is still the same control.
    */
   value?: string;
+  /**
+   * For `fill`, what was typed into each field before the submit was clicked.
+   * Kept out of the edge key for the same reason as `value`, and recorded so
+   * that a row a walk created can be traced back to the run that created it.
+   */
+  fill?: { label: string; value: string }[];
 }
 
 /**
@@ -154,6 +160,12 @@ export interface WalkConfig {
   maxDepth: number;
   settleMs: number;
   allowDangerous: boolean;
+  /**
+   * Fill each form with synthetic values and submit it, instead of leaving the
+   * form untested. Off by default because a successful submission writes real
+   * data — the same reasoning that keeps destructive controls unclicked.
+   */
+  fillForms: boolean;
   /**
    * Path to a Playwright storage-state file, so the walk starts logged in.
    * Only the path is recorded in the graph — the file holds session cookies and

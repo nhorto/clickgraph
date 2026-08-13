@@ -1,5 +1,5 @@
 import type { GraphDiff, UIGraph, OutcomeKind } from './types.js';
-import { nodeLabel } from './graph.js';
+import { actionLabel, nodeLabel } from './graph.js';
 
 const c = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
@@ -96,7 +96,7 @@ export function reportWalk(graph: UIGraph): string {
     lines.push(c.bold('Findings'));
     for (const edge of problems) {
       const tag = edge.outcome.kind === 'error' ? c.red('ERROR') : c.yellow('NO EFFECT');
-      lines.push(`  ${tag}  ${edge.action.selector.label}`);
+      lines.push(`  ${tag}  ${actionLabel(edge.action)}`);
       lines.push(
         c.dim(`         on ${nodeLabel(graph, edge.from)} — ${edge.outcome.note ?? ''}`),
       );

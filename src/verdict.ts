@@ -12,7 +12,7 @@
  */
 
 import type { GraphDiff, UIGraph } from './types.js';
-import { nodeLabel } from './graph.js';
+import { actionLabel, nodeLabel } from './graph.js';
 
 export interface VerdictFinding {
   severity: 'error' | 'no-effect';
@@ -104,7 +104,7 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
     )
     .map((e) => ({
       severity: e.outcome.kind === 'error' ? ('error' as const) : ('no-effect' as const),
-      control: e.action.selector.label,
+      control: actionLabel(e.action),
       state: nodeLabel(graph, e.from),
       detail: e.outcome.note ?? '',
     }));
