@@ -26,6 +26,17 @@ export interface ElementDescriptor {
   href: string | null;
   /** Raw `type` for inputs. `password` is what identifies a login wall. */
   inputType: string | null;
+  /**
+   * The enclosing `<form>`, identified by its position in the page, or null.
+   *
+   * Grouping is what makes a form testable at all. A single field proves almost
+   * nothing on its own — its value is not part of the state fingerprint, and the
+   * walker returns to the start before any submit happens — so the unit that
+   * means something is the whole form.
+   */
+  formId: string | null;
+  /** This control submits its form. */
+  formSubmit: boolean;
   disabled: boolean;
   /** Marked as the active tab or current page via aria-selected / aria-current. */
   selected: boolean;

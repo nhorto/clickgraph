@@ -98,6 +98,26 @@ function extractPageData() {
     return true;
   }
 
+  /**
+   * The form a control belongs to. `el.form` covers fields moved out of their
+   * form with the `form` attribute; `closest` covers everything else, including
+   * the div-with-a-role controls that have no `form` property at all.
+   */
+  function formOf(el: any): any {
+    return el.form ?? el.closest('form');
+  }
+
+  /** The control that submits its form — a bare `<button>` defaults to submit. */
+  function isSubmitControl(el: any): boolean {
+    if (!formOf(el)) return false;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'button') return (el.getAttribute('type') || 'submit').toLowerCase() === 'submit';
+    if (tag === 'input') {
+      return ['submit', 'image'].includes((el.getAttribute('type') || '').toLowerCase());
+    }
+    return false;
+  }
+
   function cssPath(el: any): string {
     const parts: string[] = [];
     let cur: any = el;
@@ -119,6 +139,9 @@ function extractPageData() {
   }
 
   const all = Array.from(document.querySelectorAll(INTERACTIVE)).filter(isVisible);
+  // Position in the page is enough of an identifier: grouping only has to hold
+  // within one snapshot, and a form rarely carries a stable id of its own.
+  const forms = Array.from(document.querySelectorAll('form'));
 
   // Count duplicates up front so we only claim a selector is unique when it is.
   const roleNameCounts = new Map<string, number>();
@@ -167,6 +190,8 @@ function extractPageData() {
       // password identifies a login wall, and the rest decide what a future
       // walker would be allowed to type into a field.
       inputType: tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
+      formId: forms.indexOf(formOf(el)) >= 0 ? `form-${forms.indexOf(formOf(el))}` : null,
+      formSubmit: isSubmitControl(el),
       disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       // Already the active tab / current page. Clicking it is expected to do
       // nothing, so a no-effect result here is not a defect.
