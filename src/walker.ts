@@ -97,6 +97,17 @@ function isTextEntry(el: ElementDescriptor): boolean {
     .includes(el.inputType ?? 'text');
 }
 
+/**
+ * How long to wait for a control to become clickable.
+ *
+ * Playwright's five-second default is a waiting room for an app that is still
+ * settling — but the walker has already waited for the DOM to go quiet before
+ * it gets here, so anything still not actionable is usually not going to be.
+ * The cost of the difference is real: thirteen controls parked off-screen in a
+ * closed drawer spent sixty-five seconds of one walk proving it.
+ */
+const ACTION_TIMEOUT = 2000;
+
 interface OptionChoice {
   value: string;
   label: string;
@@ -280,7 +291,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // A step that is not there will not appear by waiting five seconds for
         // it, and the whole path fails either way — so fail on the count.
         if ((await step.count()) === 0) return false;
-        await step.click({ timeout: 5000 });
+        await step.click({ timeout: ACTION_TIMEOUT });
         await settle(page, config.settleMs);
       } catch {
         return false;
@@ -459,11 +470,11 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
               if (field.tag === 'select') {
                 const opt = await pickOption(page, at);
                 if (!opt) continue; // nothing else to choose; leave it as it stands
-                await resolve(page, at).selectOption(opt.value, { timeout: 5000 });
+                await resolve(page, at).selectOption(opt.value, { timeout: ACTION_TIMEOUT });
                 filled.push({ label: field.selector.label, value: opt.label });
               } else {
                 const value = synthesize(field);
-                await resolve(page, at).fill(value, { timeout: 5000 });
+                await resolve(page, at).fill(value, { timeout: ACTION_TIMEOUT });
                 filled.push({ label: field.selector.label, value });
               }
             } catch {
@@ -516,15 +527,23 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
 
         const watch = new ActionWatch(page);
         let clickFailed = false;
+        // Why it could not be acted on, in the app's terms rather than the
+        // browser driver's. "Outside the viewport" is the one worth naming: it
+        // means a real control belonging to a panel this walk never opened.
+        let failure = 'found on the page, but never became clickable';
         try {
           if (choice) {
-            await resolve(page, target).selectOption(choice.value, { timeout: 5000 });
+            await resolve(page, target).selectOption(choice.value, { timeout: ACTION_TIMEOUT });
           } else {
-            await resolve(page, target).click({ timeout: 5000 });
+            await resolve(page, target).click({ timeout: ACTION_TIMEOUT });
           }
           await settle(page, config.settleMs);
-        } catch {
+        } catch (err) {
           clickFailed = true;
+          if (err instanceof Error && /outside of the viewport/.test(err.message)) {
+            failure = 'parked outside the viewport — it belongs to a panel or drawer ' +
+              'that was not open when the walk reached this state';
+          }
         }
         const observed = watch.stop();
         actionsUsed++;
@@ -534,8 +553,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           atSnapshot = null;
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
-            reason: 'unreachable',
-            detail: 'found on the page, but never became clickable within 5s',
+            reason: 'unreachable', detail: failure,
           });
           continue;
         }
@@ -556,7 +574,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             // probe silently tests nothing.
             await page.mouse.move(0, 0);
             await page.waitForTimeout(50);
-            await resolve(page, target).hover({ timeout: 5000 });
+            await resolve(page, target).hover({ timeout: ACTION_TIMEOUT });
             await settle(page, config.settleMs);
           } catch {
             /* not hoverable either — keep the click result */
