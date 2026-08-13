@@ -4,11 +4,18 @@
  * Planted defects (what a correct walk must report):
  *   1. /orders  "Export"        — button with no handler at all  → no-effect
  *   2. /settings "Save settings" — POSTs to an endpoint that 500s → error
+ *   3. /orders  "Region" select  — renders options, ignores the choice
+ *   4. /feedback "Send feedback" — the form swallows its own submission.
+ *      Only visible with --fill-forms: unfilled, the browser refuses to submit
+ *      it at all, and a walk that reported that as a dead button would be
+ *      blaming the app for its own empty form.
  *
  * Planted traps (what a correct walk must NOT do):
- *   3. /settings "Delete account" — must be skipped as dangerous
- *   4. /settings external link    — must be skipped as off-origin
- *   5. /settings "Advanced" button — disabled, must be skipped
+ *   5. /settings "Delete account" — must be skipped as dangerous
+ *   6. /settings external link    — must be skipped as off-origin
+ *   7. /settings "Advanced" button — disabled, must be skipped
+ *   8. /signup — a form that works. Filled and submitted it creates an
+ *      account; left alone it must be reported as skipped, never as broken.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -45,7 +52,7 @@ const page = (title, body) => `<!doctype html>
   #modal { border: 2px solid #333; padding: 1rem; margin-top: 1rem; }
 </style></head>
 <body>
-<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/about">About</a></nav>
+<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a></nav>
 ${body}
 </body></html>`;
 
@@ -128,6 +135,45 @@ const routes = {
       });
     </script>`),
 
+  '/signup': page('Sign up', `
+    <h1>Sign up</h1>
+    <form id="signup">
+      <p><label>Name <input type="text" id="name" name="name" required></label></p>
+      <p><label>Email <input type="email" id="email" name="email" required></label></p>
+      <p><label>Plan
+        <select id="plan" name="plan" aria-label="Plan">
+          <option value="free">Free</option>
+          <option value="team">Team</option>
+        </select></label></p>
+      <button type="submit">Create account</button>
+    </form>
+    <p id="signup-result"></p>
+    <script>
+      // A form that works. Required fields mean an unfilled walk cannot submit
+      // it at all — the case that used to be reported as a dead button.
+      document.getElementById('plan').addEventListener('change', (e) => {
+        document.getElementById('signup-result').textContent = 'Plan: ' + e.target.value;
+      });
+      document.getElementById('signup').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        await fetch('/api/signup', { method: 'POST' });
+        document.getElementById('signup-result').textContent =
+          'Account created for ' + document.getElementById('email').value;
+      });
+    </script>`),
+
+  '/feedback': page('Feedback', `
+    <h1>Feedback</h1>
+    <form id="feedback">
+      <p><label>Message <textarea id="message" name="message" required></textarea></label></p>
+      <button type="submit">Send feedback</button>
+    </form>
+    <script>
+      // Planted defect: the submission is intercepted and then dropped. The
+      // form looks complete, accepts what you type, and loses it.
+      document.getElementById('feedback').addEventListener('submit', (e) => e.preventDefault());
+    </script>`),
+
   '/about': page('About', `<h1>About</h1><p>Acme, since 1998.</p>`),
 };
 
@@ -144,6 +190,10 @@ createServer((req, res) => {
   if (path === '/api/orders') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end('{"orders":[{"id":1042}]}');
+  }
+  if (path === '/api/signup') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end('{"ok":true}');
   }
   if (path === '/api/save') {
     // Planted defect: this endpoint is broken.
