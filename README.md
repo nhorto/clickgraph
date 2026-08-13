@@ -141,9 +141,13 @@ Walked three real codebases, which found bugs the fixture never could. Current r
 
 | App | Stack | States | Walked | Findings |
 |---|---|---|---|---|
-| Vite dashboard | React + Tailwind SPA | 40 (budget) | 159 | 0 |
-| Marketing site | Next.js App Router | 6 | 42 | 0 |
-| App Atlas web | React + React Flow SPA | 14 | 26 | 0 |
+| Vite dashboard | React + Tailwind SPA | 40 (budget) | 160 | 0 |
+| Marketing site | Next.js App Router | 6 | 66 | 0 |
+| App Atlas web | React + React Flow SPA | 40 (budget) | 83 | 0 |
+
+Two of the three hit the default state budget rather than running out of app,
+and reported the 3,583 and 5,352 controls they never reached rather than
+implying they had covered everything.
 
 Every false positive those runs exposed is now fixed, and each fix is a rule worth keeping:
 

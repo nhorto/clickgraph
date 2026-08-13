@@ -57,11 +57,28 @@ Deliberately split in two, because one half is much cheaper than the other:
 
 ## Phase 3 — a fast inner loop
 
+Speed is the real ceiling: a walk of a real dashboard costs about 2.9 seconds
+per action against 0.6 on the local fixture, and the difference is almost
+entirely the app reloading. A bounded 60-action walk takes just under three
+minutes; the App Atlas UI ran past ten and still hit its state budget.
+
 - [ ] Per-edge replay scripts: `diff` currently re-explores everything.
       Replaying the baseline's known edges deterministically is the cheap
       inner loop; exploration becomes occasional, replay runs on every change.
-- [ ] Navigate by shortest path through the graph instead of resetting to the
-      base URL between actions — the current speed ceiling.
+- [ ] Cut the number of reloads, which is where the time actually goes.
+      Ordering the frontier so consecutive actions share a source state, or
+      walking several states at once in separate browser contexts. Reaching a
+      state by clicking through the running app, rather than reloading into it,
+      is the version of this that would help a single-page app.
+- [x] **Measured and rejected: entering a state by navigating straight to its
+      URL.** The intuition was that replaying a path costs a reload plus every
+      click on the way in. Interleaved A/B on a real dashboard: 175.5s replay
+      vs 176.4s direct — no gain, marginally worse. Two reasons, both
+      instructive. Most of that app's states share a single URL, so the direct
+      attempt never matched and every one was wasted work. And where it does
+      match, a direct navigation is still a reload — the same cost the replay
+      was already paying. Anything that keeps reloading per action cannot win;
+      the next attempt has to remove reloads, not reroute them.
 
 ## Phase 4 — the pairing and the showpiece
 
