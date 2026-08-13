@@ -1,0 +1,27 @@
+{
+  "name": "clickgraph",
+  "version": "0.1.0",
+  "description": "Walk a running web app headlessly, build a diffable graph of UI states and transitions, and catch broken interactions before they ship.",
+  "type": "module",
+  "bin": {
+    "clickgraph": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "fixture": "node fixture/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "private": true
+}
