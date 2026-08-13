@@ -5,6 +5,7 @@
 #   A  an unchanged app produces no findings (no crying wolf)
 #   B  a broken interaction is caught as a regression
 #   C  a newly added control that does nothing is caught on arrival
+#   D  --json says the same thing the report and the exit code say
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -62,6 +63,38 @@ grep -qE 'new interaction: button "Print invoice".*(network-only|state-changed)'
 check "$?" "0" "does not flag the working new button"
 grep -q 'Regressions (1)' /tmp/clickgraph-feat.txt
 check "$?" "0" "reports exactly one regression, no cascade noise"
+
+echo "D: the JSON verdict agrees with the report"
+# An agent reads --json and nothing else, so a verdict that disagrees with the
+# exit code is worse than no verdict at all.
+node dist/cli.js diff "$URL" --quiet --json >/tmp/clickgraph-feat.json 2>/dev/null
+code=$?
+node -e '
+  const v = require("/tmp/clickgraph-feat.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.ok !== false) fail("ok should be false while a regression stands");
+  if (v.regressions.length !== 1) fail(`want 1 regression, got ${v.regressions.length}`);
+  if (!/Archive/.test(v.regressions[0].summary)) fail("the dead new button is not the regression");
+  if (!v.other.some((c) => /Print invoice/.test(c.summary))) fail("the working new button is missing from other");
+  if (typeof v.coverage.walked !== "number") fail("coverage must travel with the verdict");
+' 2>/tmp/clickgraph-json-err.txt
+check "$?" "0" "diff --json reports the regression and keeps the working control out of it"
+check "$code" "1" "diff --json still exits 1"
+
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-alt.json >/tmp/clickgraph-walk.json 2>/dev/null
+node -e '
+  const v = require("/tmp/clickgraph-walk.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.ok !== true) fail("a healthy app that walked should be ok");
+  if (v.findings.length !== 2) fail(`want the 2 planted defects, got ${v.findings.length}`);
+  if (!v.findings.some((f) => f.severity === "error" && /Save settings/.test(f.control)))
+    fail("the 500 is not reported as an error");
+  if (!v.findings.some((f) => f.severity === "no-effect" && /Export/.test(f.control)))
+    fail("the unwired button is not reported as no-effect");
+  if (!v.coverage.skipped.some((s) => s.reason === "dangerous")) fail("skips must survive into JSON");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "walk --json carries both planted defects and the skip reasons"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
