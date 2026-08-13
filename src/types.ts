@@ -37,6 +37,16 @@ export interface ElementDescriptor {
   formId: string | null;
   /** This control submits its form. */
   formSubmit: boolean;
+  /**
+   * A verified-unique CSS path to the same element, or null.
+   *
+   * The recorded selector is chosen for durability, which is not the same thing
+   * as being resolvable: the name it matches on is derived from the DOM here,
+   * while Playwright derives its own from the accessible-name algorithm, and
+   * the two disagree over decorative content, CSS text-transform and title
+   * attributes. This is what the walker falls back to when they do.
+   */
+  fallback: string | null;
   disabled: boolean;
   /** Marked as the active tab or current page via aria-selected / aria-current. */
   selected: boolean;

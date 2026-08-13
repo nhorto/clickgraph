@@ -118,24 +118,35 @@ function extractPageData() {
     return false;
   }
 
-  function cssPath(el: any): string {
+  /**
+   * A structural path to the element, for when nothing more durable exists.
+   *
+   * It has to be anchored honestly. The old version stopped after eight levels
+   * and prefixed `body >` anyway, which describes an element that is not there:
+   * every lookup through such a path silently matches nothing. On a real
+   * dashboard that was a third of the deep controls, each one costing a
+   * five-second timeout before being written off as unclickable.
+   */
+  function cssPath(el: any): string | null {
     const parts: string[] = [];
     let cur: any = el;
-    while (cur && cur.nodeType === 1 && cur !== document.body && parts.length < 8) {
-      let part = cur.tagName.toLowerCase();
+    while (cur && cur.nodeType === 1 && cur !== document.body) {
       if (cur.id && isStableId(cur.id)) {
         parts.unshift(`#${CSS.escape(cur.id)}`);
         return parts.join(' > ');
       }
+      let part = cur.tagName.toLowerCase();
       const parent = cur.parentElement;
       if (parent) {
         const sameTag = Array.from(parent.children).filter((c: any) => c.tagName === cur.tagName);
         if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(cur) + 1})`;
       }
       parts.unshift(part);
-      cur = cur.parentElement;
+      cur = parent;
+      // A path this long is not worth trusting. No path beats a wrong one.
+      if (parts.length > 40) return null;
     }
-    return parts.length ? `body > ${parts.join(' > ')}` : 'body';
+    return parts.length && cur === document.body ? `body > ${parts.join(' > ')}` : null;
   }
 
   const all = Array.from(document.querySelectorAll(INTERACTIVE)).filter(isVisible);
@@ -168,6 +179,17 @@ function extractPageData() {
       if (v) { testid = v; testidAttr = attr; break; }
     }
 
+    // Checked here so a path that matches two elements — or none — is never
+    // handed on as though it identified one.
+    let css: string | null = cssPath(el);
+    if (css) {
+      try {
+        if (document.querySelectorAll(css).length !== 1) css = null;
+      } catch {
+        css = null;
+      }
+    }
+
     if (testid && document.querySelectorAll(`[${testidAttr}="${CSS.escape(testid)}"]`).length === 1) {
       selector = { strategy: 'testid', value: `[${testidAttr}="${testid}"]`, label };
     } else if (el.id && isStableId(el.id) && document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) {
@@ -176,8 +198,12 @@ function extractPageData() {
       selector = { strategy: 'role-name', value: `${role}|${name}`, label };
     } else if (el.innerText?.trim() && textCounts.get(el.innerText.trim()) === 1) {
       selector = { strategy: 'text', value: el.innerText.trim(), label };
+    } else if (css) {
+      selector = { strategy: 'css', value: css, label };
     } else {
-      selector = { strategy: 'css', value: cssPath(el), label };
+      // Nothing unique is left. Recorded anyway rather than dropped, so the
+      // control shows up as something that could not be pinned down.
+      selector = { strategy: 'role-name', value: `${role}|${name}`, label };
     }
 
     return {
@@ -191,6 +217,9 @@ function extractPageData() {
       // walker would be allowed to type into a field.
       inputType: tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
       formId: forms.indexOf(formOf(el)) >= 0 ? `form-${forms.indexOf(formOf(el))}` : null,
+      // A second way to reach the same element, for when the first one stops
+      // working. Never stored in the graph — it exists only within a run.
+      fallback: css,
       formSubmit: isSubmitControl(el),
       disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       // Already the active tab / current page. Clicking it is expected to do
