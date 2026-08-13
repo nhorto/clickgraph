@@ -122,6 +122,27 @@ async function pickOption(page: Page, selector: Selector): Promise<OptionChoice 
   }
 }
 
+/**
+ * Will this form submit as it stands, or will the browser refuse it?
+ *
+ * `checkValidity` is the browser's own answer, which beats reading the markup
+ * and guessing. An unknown answer counts as "it will submit", so this can only
+ * ever hold back a click, never invent a reason to make one.
+ */
+async function formWillSubmit(page: Page, selector: Selector): Promise<boolean> {
+  try {
+    return await resolve(page, selector).evaluate((el: any) => {
+      const form = el.form ?? el.closest('form');
+      if (!form) return true;
+      // Validation turned off is a submission that always goes through.
+      if (form.noValidate || el.hasAttribute('formnovalidate')) return true;
+      return form.checkValidity();
+    });
+  } catch {
+    return true;
+  }
+}
+
 function isDangerous(el: ElementDescriptor): boolean {
   const text = `${el.name} ${el.selector.label}`;
   return DANGEROUS.some((re) => re.test(text));
@@ -341,6 +362,19 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             });
             continue;
           }
+        }
+
+        // Clicking the submit button of a form the browser will not accept
+        // tests nothing: native validation refuses the submission and changes
+        // no DOM, so a working control reads as dead. Left unhandled, every
+        // form with a required field in every app is reported broken.
+        if (el.formSubmit && !(await formWillSubmit(page, el.selector))) {
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label,
+            reason: 'needs-input',
+            detail: 'the form is not filled in, so the browser refuses to submit it',
+          });
+          continue;
         }
 
         const before = atSnapshot;
