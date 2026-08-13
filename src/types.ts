@@ -114,7 +114,7 @@ export interface UIEdge {
 export interface SkippedElement {
   nodeId: string;
   label: string;
-  reason: 'dangerous' | 'external' | 'disabled' | 'budget';
+  reason: 'dangerous' | 'external' | 'disabled' | 'budget' | 'needs-input';
   detail?: string;
 }
 
