@@ -2,6 +2,7 @@
 import { walk } from './walker.js';
 import { DEFAULT_GRAPH_PATH, diffGraphs, loadGraph, saveGraph } from './graph.js';
 import { reportDiff, reportWalk } from './report.js';
+import { diffVerdict, walkVerdict } from './verdict.js';
 
 interface Args {
   command: string;
@@ -57,7 +58,9 @@ Options
                         settled (default 250; raise if your app updates late
                         and working controls look dead)
   --allow-dangerous     also click delete / logout / pay controls (off by default)
-  --json                machine-readable output
+  --json                machine-readable output. walk and diff print a compact
+                        verdict built for an agent to read; show prints the
+                        whole graph
   --quiet               suppress progress lines
 
 Exit codes
@@ -91,20 +94,16 @@ async function main(): Promise<number> {
     }
     const graph = await walk(args.url, walkOptions);
     saveGraph(graph, args.out);
-    if (args.json) console.log(JSON.stringify(graph, null, 2));
+    // A baseline taken from an app that errors on load, or that offered nothing
+    // to walk, is not a baseline worth trusting — say so in the exit code.
+    // `ok` on the verdict carries the same judgment, so the two cannot drift.
+    const verdict = walkVerdict(graph, args.out);
+    if (args.json) console.log(JSON.stringify(verdict, null, 2));
     else {
       console.log(reportWalk(graph));
       console.log(`  baseline written to ${args.out}\n`);
     }
-    // A baseline taken from an app that errors on load, or that offered nothing
-    // to walk, is not a baseline worth trusting — say so in the exit code.
-    // Same rule as during the walk: server errors and JavaScript errors are
-    // real, an incidental 404 on load is not worth failing a baseline over.
-    const unhealthy =
-      graph.load.httpErrors.some((e) => /^5\d\d /.test(e)) ||
-      graph.load.consoleErrors.length > 0 ||
-      graph.coverage.edgesWalked === 0;
-    return unhealthy ? 1 : 0;
+    return verdict.ok ? 0 : 1;
   }
 
   if (args.command === 'diff') {
@@ -119,9 +118,10 @@ async function main(): Promise<number> {
     }
     const current = await walk(args.url, walkOptions);
     const diff = diffGraphs(baseline, current);
-    if (args.json) console.log(JSON.stringify(diff, null, 2));
+    const verdict = diffVerdict(diff, current);
+    if (args.json) console.log(JSON.stringify(verdict, null, 2));
     else console.log(reportDiff(diff));
-    return diff.changes.some((ch) => ch.severity === 'regression') ? 1 : 0;
+    return verdict.ok ? 0 : 1;
   }
 
   if (args.command === 'show') {
