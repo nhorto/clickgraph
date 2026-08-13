@@ -152,7 +152,7 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **Already-active controls are not dead controls.** A link to the current page, or the tab already selected.
 - **Some controls answer to hover, not click.** A dashboard of glossary terms opened tooltips on `pointerenter` while the click handler toggled them shut — sixteen working tiles read as dead. Probing hover requires moving the pointer away first, or you re-hover an element the mouse never left and test nothing.
 - **A control that opens a panel does nothing once that panel is open.** Only visible after the walk finishes: the button is recognizable as already-open from the edge that opened it. This also settles the nav-item case — a link to the view you are on is inert whether or not it carries `aria-current`.
-- **A `<select>` cannot be verified by clicking.** It answers to choosing an option, so a click on one always looks dead. Until the walker can pick a value it is reported as skipped, not as a finding — an untested control, not a broken one.
+- **Controls that answer to typing cannot be verified by clicking.** A `<select>` answers to choosing an option; a text field answers to typing. Clicking either changes nothing, so before this every search box and form field in an app read as a dead control. Selects are now walked by choosing an option they are not already showing. Text fields are reported as skipped — untested, not broken.
 
 ## Layout
 

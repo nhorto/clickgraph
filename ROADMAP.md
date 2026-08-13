@@ -36,11 +36,22 @@ Deliberately split in two, because one half is much cheaper than the other:
       waiting while a human signs in. A login screen on the entry page is
       detected, reported, and fails the run — a gated app used to walk its own
       login form and call it clean.
-- [ ] Form input: selects first — a finite option set and no free text, and
-      they are already being skipped as `needs-input`. Then text fields with
-      config-provided values. Submission gets the same caution as the
-      dangerous-pattern rules — a walker that types into real forms can do
-      real damage.
+- [x] Selects are walked by choosing an option the control is not already
+      showing, rather than clicked. A real dashboard's filter went from a false
+      finding, to an honest skip, to a control proven to work.
+- [x] Text fields and textareas are skipped as `needs-input` instead of
+      clicked. This was the largest false-positive class left: a click on a
+      text field focuses it and changes nothing, so every search box and every
+      form field in every app was being reported as a dead control.
+- [ ] Form flows, which is the feature per-field typing only looks like.
+      Filling one field proves almost nothing on its own: an input's value is
+      not part of the state fingerprint, so a working field looks inert, and
+      the walker resets between actions so a value typed for a later submit is
+      gone before the submit happens. The unit that means something is the
+      whole form — fill every field, then click its submit, as one action —
+      with values obviously synthetic so anything it creates is traceable.
+      Needs the dangerous-pattern treatment: submitting real forms writes real
+      data, so it should be opt-in and skipped-with-a-reason by default.
 - [ ] Keep walking new real apps; each one so far has found a false-positive
       class the fixture could not (see README).
 
