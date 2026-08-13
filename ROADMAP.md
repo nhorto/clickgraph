@@ -43,15 +43,27 @@ Deliberately split in two, because one half is much cheaper than the other:
       clicked. This was the largest false-positive class left: a click on a
       text field focuses it and changes nothing, so every search box and every
       form field in every app was being reported as a dead control.
-- [ ] Form flows, which is the feature per-field typing only looks like.
+- [x] Form flows, which is the feature per-field typing only looks like.
       Filling one field proves almost nothing on its own: an input's value is
       not part of the state fingerprint, so a working field looks inert, and
       the walker resets between actions so a value typed for a later submit is
-      gone before the submit happens. The unit that means something is the
-      whole form — fill every field, then click its submit, as one action —
-      with values obviously synthetic so anything it creates is traceable.
-      Needs the dangerous-pattern treatment: submitting real forms writes real
-      data, so it should be opt-in and skipped-with-a-reason by default.
+      gone before the submit happens. `--fill-forms` fills every field and
+      clicks the submit as one action, with values that all contain
+      `clickgraph-test` so anything the run creates is greppable. Opt-in and
+      skipped-with-a-reason by default, like the destructive patterns, because
+      a submission that succeeds writes real data.
+- [x] Writing it surfaced a false positive nothing had exercised yet: clicking
+      the submit button of an *unfilled* form fires native validation, which
+      refuses the submission and changes no DOM — identical, from the outside,
+      to a button wired to nothing. Every signup, login and checkout form in
+      every app was being reported broken. The browser's own `checkValidity`
+      answers it, and the form is now reported as skipped until something
+      fills it in. This one came from thinking the feature through rather than
+      from a real app, which is the first time that has happened.
+- [ ] Field clusters that are not inside a `<form>` element — the React
+      pattern of some inputs and a handler-bound button. There is no grouping
+      to key on, and guessing one wrong means typing into fields that do not
+      belong together. Currently skipped, which is honest, and a real gap.
 - [ ] Keep walking new real apps; each one so far has found a false-positive
       class the fixture could not (see README).
 
@@ -61,6 +73,11 @@ Speed is the real ceiling: a walk of a real dashboard costs about 2.9 seconds
 per action against 0.6 on the local fixture, and the difference is almost
 entirely the app reloading. A bounded 60-action walk takes just under three
 minutes; the App Atlas UI ran past ten and still hit its state budget.
+
+It is now this project's own bottleneck too. Adding two routes to the fixture
+took one walk from 31 to 49 seconds and `verify.sh` to eight minutes — the
+suite is ten walks, and it is the thing standing between an idea and knowing
+whether the idea worked.
 
 - [ ] Per-edge replay scripts: `diff` currently re-explores everything.
       Replaying the baseline's known edges deterministically is the cheap

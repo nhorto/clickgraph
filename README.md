@@ -116,6 +116,32 @@ npx clickgraph diff http://localhost:5173 --storage-state .uigraph/session.json
 When the session expires the diff says so — "the entry page now looks like a
 login screen" — instead of reporting the entire app as missing.
 
+## Forms
+
+Clicking a form's submit button with its fields empty proves nothing: the
+browser refuses the submission and no application code runs. So a form is
+reported as skipped, with the reason, rather than as a dead button — otherwise
+every signup, login and checkout form in every app comes back broken.
+
+`--fill-forms` fills each form with obviously synthetic values and submits it:
+
+```bash
+npx clickgraph walk http://localhost:5173 --fill-forms
+```
+
+```
+NO EFFECT  button "Send feedback" (form filled: 1 field(s))
+           on /feedback — no navigation, no state change, no network traffic
+```
+
+Off by default, for the same reason delete buttons go unclicked: a submission
+that succeeds writes real data. Every value contains `clickgraph-test`, and
+addresses use the reserved `.invalid` domain and the 555-01xx phone block, so
+whatever a walk creates is greppable afterwards and can never reach a real
+person. A password field is never typed into and stops its whole form — a wrong
+password is a failed sign-in attempt, which on a real app means rate limiting or
+a locked account.
+
 ## Safety
 
 The walker clicks autonomously against a real app, so by default it refuses controls matching destructive patterns (delete, remove, sign out, pay, purchase, deactivate), skips off-origin links, and skips disabled controls. All of them are reported as *skipped with a reason* — never as passing. `--allow-dangerous` overrides, and should only be pointed at a disposable environment.
@@ -133,7 +159,11 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through three scenarios — unchanged (twice, for determinism), a broken interaction, and a new feature with one dead control — and asserts on the output. 14 checks, all passing as of the last commit.
+Runs the fixture app through six scenarios — unchanged (twice, for
+determinism), a broken interaction, a new feature with one dead control, the
+JSON verdict agreeing with the exit code, an app behind a login screen, and a
+form that drops its submission beside one that works. 28 checks, all passing as
+of the last commit.
 
 ## Tested against real apps
 
@@ -156,7 +186,8 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **Already-active controls are not dead controls.** A link to the current page, or the tab already selected.
 - **Some controls answer to hover, not click.** A dashboard of glossary terms opened tooltips on `pointerenter` while the click handler toggled them shut — sixteen working tiles read as dead. Probing hover requires moving the pointer away first, or you re-hover an element the mouse never left and test nothing.
 - **A control that opens a panel does nothing once that panel is open.** Only visible after the walk finishes: the button is recognizable as already-open from the edge that opened it. This also settles the nav-item case — a link to the view you are on is inert whether or not it carries `aria-current`.
-- **Controls that answer to typing cannot be verified by clicking.** A `<select>` answers to choosing an option; a text field answers to typing. Clicking either changes nothing, so before this every search box and form field in an app read as a dead control. Selects are now walked by choosing an option they are not already showing. Text fields are reported as skipped — untested, not broken.
+- **Controls that answer to typing cannot be verified by clicking.** A `<select>` answers to choosing an option; a text field answers to typing. Clicking either changes nothing, so before this every search box and form field in an app read as a dead control. Selects are now walked by choosing an option they are not already showing. Text fields are only typed into as part of their form.
+- **An empty form's submit button is not a dead control.** Clicking it fires native validation, which refuses the submission and changes no DOM — indistinguishable from a button wired to nothing. The browser's own `checkValidity` settles it, and the form is reported as skipped until something fills it in.
 
 ## Layout
 
@@ -171,7 +202,7 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 
 ## Next
 
-See [ROADMAP.md](ROADMAP.md). The short version: get past the login screen
-(session reuse, then form input), then make the inner loop replay instead of
-re-explore, then the App Atlas pairing and a graph viewer. The LLM healer comes
-last, on purpose — the deterministic core has to earn trust first.
+See [ROADMAP.md](ROADMAP.md). The short version: make the inner loop faster —
+a walk costs about 2.9s per action on a real app and almost all of it is the app
+reloading — then the App Atlas pairing and a graph viewer. The LLM healer comes
+last, on purpose: the deterministic core has to earn trust first.
