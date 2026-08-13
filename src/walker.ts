@@ -4,6 +4,36 @@ import type {
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
 import { ActionWatch, captureState, classifyOutcome, resolve, type PageSnapshot } from './observer.js';
+import { normalizeText } from './fingerprint.js';
+
+/**
+ * A control that leads to state X does nothing when clicked from state X — it
+ * has already done its job. The same family as a link to the page you are
+ * already on, but visible only once the whole walk is finished: the button that
+ * opens a panel is recognizable as already-open only from the edge that opened
+ * it.
+ *
+ * Deliberately narrow — it requires the identical control to have produced this
+ * exact state elsewhere in the same walk. The accepted cost is a toggle that
+ * ought to close its panel and does not, which this marks benign. That trade
+ * follows the project's usual rule: a confident false finding costs more than a
+ * quiet miss.
+ */
+function markAlreadyApplied(edges: UIEdge[]): void {
+  const key = (edge: UIEdge, state: string) =>
+    `${edge.action.role}|${normalizeText(edge.action.name)}→${state}`;
+  const opens = new Set<string>();
+  for (const edge of edges) {
+    if (edge.to) opens.add(key(edge, edge.to));
+  }
+  for (const edge of edges) {
+    if (edge.outcome.kind !== 'no-effect' || edge.outcome.benign) continue;
+    if (opens.has(key(edge, edge.from))) {
+      edge.outcome.benign = true;
+      edge.outcome.note = 'the state this control opens is already showing';
+    }
+  }
+}
 
 /**
  * Controls we refuse to click unsupervised. The walker runs autonomously against
@@ -192,6 +222,17 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           });
           continue;
         }
+        // A select answers to choosing an option, never to being clicked, so a
+        // click on one is guaranteed to look dead. Reporting that as a finding
+        // is a falsehood about working code; the honest answer until the walker
+        // can pick a value is that this control was not tested.
+        if (el.tag === 'select') {
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label,
+            reason: 'needs-input', detail: 'a select responds to choosing an option, not to a click',
+          });
+          continue;
+        }
 
         // Re-enter the source state only when the browser is not already sitting
         // in it. Actions that change nothing — the common case — leave the page
@@ -306,6 +347,8 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   } finally {
     await browser.close();
   }
+
+  markAlreadyApplied(edges);
 
   return {
     version: GRAPH_VERSION,
