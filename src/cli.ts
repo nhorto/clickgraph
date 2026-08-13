@@ -19,6 +19,7 @@ interface Args {
   maxDepth?: number;
   settleMs?: number;
   allowDangerous: boolean;
+  fillForms: boolean;
   storageState?: string;
 }
 
@@ -29,6 +30,7 @@ function parseArgs(argv: string[]): Args {
     json: false,
     quiet: false,
     allowDangerous: false,
+    fillForms: false,
   };
   const rest = argv.slice(1);
   for (let i = 0; i < rest.length; i++) {
@@ -36,6 +38,7 @@ function parseArgs(argv: string[]): Args {
     if (arg === '--json') args.json = true;
     else if (arg === '--quiet') args.quiet = true;
     else if (arg === '--allow-dangerous') args.allowDangerous = true;
+    else if (arg === '--fill-forms') args.fillForms = true;
     else if (arg === '--out' || arg === '--baseline') args.out = rest[++i];
     else if (arg === '--max-states') args.maxStates = Number(rest[++i]);
     else if (arg === '--max-actions') args.maxActions = Number(rest[++i]);
@@ -69,6 +72,10 @@ Options
                         save one (default ${DEFAULT_SESSION_PATH}). It holds
                         live cookies — keep it out of git
   --allow-dangerous     also click delete / logout / pay controls (off by default)
+  --fill-forms          fill each form with obviously synthetic values and
+                        submit it. Off by default: a form that submits
+                        successfully writes real data. Without it a form is
+                        reported as skipped, never as working
   --json                machine-readable output. walk and diff print a compact
                         verdict built for an agent to read; show prints the
                         whole graph
@@ -95,6 +102,7 @@ async function main(): Promise<number> {
     maxDepth: args.maxDepth,
     settleMs: args.settleMs,
     allowDangerous: args.allowDangerous,
+    fillForms: args.fillForms,
     storageState: args.storageState,
     onProgress: args.quiet || args.json ? undefined : (m: string) => console.error(`  ${m}`),
   };
