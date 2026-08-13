@@ -12,11 +12,28 @@
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
+ *
+ * Run with AUTH=1 to put the whole app behind a login screen, so the walker can
+ * be checked against the case it used to get wrong: without a session it walks
+ * the login form and reports a clean run of a page nobody cares about.
  */
 import { createServer } from 'node:http';
 
 const PORT = Number(process.env.PORT ?? 4173);
 const BREAK = process.env.BREAK === '1';
+const AUTH = process.env.AUTH === '1';
+
+const LOGIN_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+  <h1>Sign in</h1>
+  <form method="post" action="/login">
+    <label>Email <input type="email" name="email"></label>
+    <label>Password <input type="password" name="password"></label>
+    <button type="submit">Sign in</button>
+  </form>
+  <p><a href="/forgot">Forgot your password?</a></p>
+</body></html>`;
 
 const page = (title, body) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>${title}</title>
@@ -98,6 +115,13 @@ const routes = {
 
 createServer((req, res) => {
   const path = req.url.split('?')[0];
+
+  // The gate, when AUTH=1: no session cookie means every route is the login
+  // page. A walker without a saved session sees only the door.
+  if (AUTH && !/(^|;\s*)session=/.test(req.headers.cookie ?? '')) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(LOGIN_PAGE);
+  }
 
   if (path === '/api/orders') {
     res.writeHead(200, { 'content-type': 'application/json' });

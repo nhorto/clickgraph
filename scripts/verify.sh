@@ -96,6 +96,43 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "walk --json carries both planted defects and the skip reasons"
 
+echo "E: an app behind a login screen"
+# The failure this guards against: a gated app walks its own login form
+# cleanly, and that report is indistinguishable from a real one.
+start_fixture PORT="$PORT" AUTH=1
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-auth.json \
+  >/tmp/clickgraph-auth-out.json 2>/dev/null
+check "$?" "1" "walking a login screen does not exit 0"
+node -e '
+  const v = require("/tmp/clickgraph-auth-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.ok !== false) fail("ok must be false when the run never got past the door");
+  if (!v.load.likelyAuthWall) fail("the login wall was not detected");
+  if (!/login screen/.test(v.verdict)) fail("the verdict does not say it walked a login page");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "says it walked the login page, not the app"
+
+cat > /tmp/clickgraph-session.json <<'JSON'
+{ "cookies": [ { "name": "session", "value": "test-session", "domain": "localhost",
+  "path": "/", "expires": -1, "httpOnly": false, "secure": false, "sameSite": "Lax" } ],
+  "origins": [] }
+JSON
+node dist/cli.js walk "$URL" --quiet --json --storage-state /tmp/clickgraph-session.json \
+  --out /tmp/clickgraph-auth2.json >/tmp/clickgraph-auth2-out.json 2>/dev/null
+check "$?" "0" "a saved session gets past the gate"
+node -e '
+  const v = require("/tmp/clickgraph-auth2-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.load.likelyAuthWall) fail("still behind the login screen with a session");
+  const names = v.findings.map((f) => f.control).join(" ");
+  if (!/Export/.test(names) || !/Save settings/.test(names))
+    fail(`the planted defects were not found behind the gate: ${names}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "finds both planted defects behind the gate"
+
+node dist/cli.js walk "$URL" --quiet --storage-state /tmp/does-not-exist.json >/dev/null 2>&1
+check "$?" "2" "a missing storage-state file is a usage error, not a silent walk"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]
