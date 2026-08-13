@@ -34,10 +34,16 @@ export interface ElementDescriptor {
 }
 
 export interface Action {
-  kind: 'click' | 'hover';
+  kind: 'click' | 'hover' | 'select';
   selector: Selector;
   role: string;
   name: string;
+  /**
+   * For `select`, the option that was chosen. Deliberately not part of the edge
+   * key: an option list built from live data changes between runs, and a filter
+   * that offers different names this week is still the same control.
+   */
+  value?: string;
 }
 
 /**

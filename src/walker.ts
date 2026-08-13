@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { chromium, type Browser, type Page } from 'playwright';
 import type {
-  Action, ElementDescriptor, LoadHealth, SkippedElement, UIEdge, UIGraph, UINode, WalkConfig,
+  Action, ElementDescriptor, LoadHealth, Selector, SkippedElement, UIEdge, UIGraph, UINode,
+  WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
 import { ActionWatch, captureState, classifyOutcome, resolve, type PageSnapshot } from './observer.js';
@@ -78,6 +79,33 @@ function looksLikeAuthWall(url: string, elements: ElementDescriptor[]): boolean 
     /\b(sign|log)\s?in\b|\bcontinue with\b/i.test(el.name),
   );
   return authRoute && signInControl;
+}
+
+interface OptionChoice {
+  value: string;
+  label: string;
+}
+
+/**
+ * Choose an option a select is not already showing.
+ *
+ * Picking the one already selected would be a guaranteed no-op, which is the
+ * same trap as clicking the tab you are already on: the control would look dead
+ * while working perfectly. One option is enough to prove the select does
+ * something, and walking every option of a long list would spend the whole
+ * action budget on a single dropdown.
+ */
+async function pickOption(page: Page, selector: Selector): Promise<OptionChoice | null> {
+  try {
+    return await resolve(page, selector).evaluate((el: any) => {
+      const options = Array.from(el.options ?? []) as any[];
+      const next = options.find((o) => !o.selected && !o.disabled);
+      if (!next) return null;
+      return { value: next.value, label: (next.label || next.value || '').trim() };
+    });
+  } catch {
+    return null;
+  }
 }
 
 function isDangerous(el: ElementDescriptor): boolean {
@@ -258,17 +286,6 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           });
           continue;
         }
-        // A select answers to choosing an option, never to being clicked, so a
-        // click on one is guaranteed to look dead. Reporting that as a finding
-        // is a falsehood about working code; the honest answer until the walker
-        // can pick a value is that this control was not tested.
-        if (el.tag === 'select') {
-          skipped.push({
-            nodeId: state.nodeId, label: el.selector.label,
-            reason: 'needs-input', detail: 'a select responds to choosing an option, not to a click',
-          });
-          continue;
-        }
 
         // Re-enter the source state only when the browser is not already sitting
         // in it. Actions that change nothing — the common case — leave the page
@@ -285,15 +302,39 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           atSnapshot = await captureState(page);
         }
 
+        // A select answers to choosing an option, never to being clicked, so it
+        // needs a different action or it is guaranteed to look dead. This has to
+        // come after the state has been re-entered above — the option list can
+        // only be read once the browser is actually sitting on the page.
+        let choice: OptionChoice | null = null;
+        if (el.tag === 'select') {
+          choice = await pickOption(page, el.selector);
+          if (!choice) {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label,
+              reason: 'needs-input',
+              detail: 'no option available other than the one already chosen',
+            });
+            continue;
+          }
+        }
+
         const before = atSnapshot;
-        const action: Action = {
-          kind: 'click', selector: el.selector, role: el.role, name: el.name,
-        };
+        const action: Action = choice
+          ? {
+              kind: 'select', selector: el.selector, role: el.role, name: el.name,
+              value: choice.label,
+            }
+          : { kind: 'click', selector: el.selector, role: el.role, name: el.name };
 
         const watch = new ActionWatch(page);
         let clickFailed = false;
         try {
-          await resolve(page, el.selector).click({ timeout: 5000 });
+          if (choice) {
+            await resolve(page, el.selector).selectOption(choice.value, { timeout: 5000 });
+          } else {
+            await resolve(page, el.selector).click({ timeout: 5000 });
+          }
           await settle(page, config.settleMs);
         } catch {
           clickFailed = true;
