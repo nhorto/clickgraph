@@ -74,6 +74,18 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
       detail: newLoadErrors.slice(0, 3).join(' · '),
     });
   }
+  // A run that used to reach the app and now lands on a login screen has not
+  // found a UI bug — it has lost its session, and every finding below it would
+  // be about the login page. Say that instead of reporting the whole app gone.
+  if (!baseLoad.likelyAuthWall && currLoad.likelyAuthWall) {
+    changes.push({
+      kind: 'missing-state',
+      severity: 'regression',
+      summary: 'the entry page now looks like a login screen',
+      detail:
+        'the saved session may have expired, or the app started requiring auth — re-save it before trusting anything else in this diff',
+    });
+  }
   if (baseLoad.interactiveFound > 0 && currLoad.interactiveFound === 0) {
     changes.push({
       kind: 'missing-state',
