@@ -49,6 +49,33 @@ Other changes (2)
 
 Exit codes: `0` no regressions, `1` regressions found, `2` usage/runtime error — so an agent or CI can gate on it.
 
+### What an agent reads
+
+`--json` prints a compact verdict rather than the whole graph — an agent that has
+to parse thousands of lines to find two broken buttons will either burn its
+context or skip the check. `ok` always agrees with the exit code.
+
+```json
+{
+  "ok": false,
+  "verdict": "of 28 interaction(s) walked, 1 errored and 1 produced no observable effect",
+  "load": { "healthy": true, "errors": [], "interactiveFound": 12 },
+  "findings": [
+    { "severity": "error", "control": "button \"Save settings\"", "state": "/settings",
+      "detail": "500 POST /api/save" }
+  ],
+  "coverage": { "states": 6, "walked": 28, "unwalked": 0, "skipped": [] }
+}
+```
+
+`skill/clickgraph/` is a Claude Code skill that teaches an agent when to walk,
+when to diff, and how to read that verdict — including the rules for what it
+does *not* prove. Install it with:
+
+```bash
+cp -r skill/clickgraph ~/.claude/skills/clickgraph
+```
+
 ## How it works
 
 1. **Explore.** Breadth-first from the base URL. At each state, enumerate every visible, enabled control, click one, and classify what happened.
@@ -92,7 +119,7 @@ Walked three real codebases, which found bugs the fixture never could. Current r
 
 | App | Stack | States | Walked | Findings |
 |---|---|---|---|---|
-| Vite dashboard | React + Tailwind SPA | 15 | 28 | 1 (an active nav item with no `aria-current`) |
+| Vite dashboard | React + Tailwind SPA | 40 (budget) | 159 | 0 |
 | Marketing site | Next.js App Router | 6 | 42 | 0 |
 | App Atlas web | React + React Flow SPA | 14 | 26 | 0 |
 
@@ -102,6 +129,8 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **Not every 4xx is a defect.** An endpoint that answers 404 to mean "this optional thing does not exist" is not a bug when the app handles it. 5xx and uncaught exceptions still fail; a 4xx with *nothing visible happening* still fails, because that silent failure is real.
 - **Already-active controls are not dead controls.** A link to the current page, or the tab already selected.
 - **Some controls answer to hover, not click.** A dashboard of glossary terms opened tooltips on `pointerenter` while the click handler toggled them shut — sixteen working tiles read as dead. Probing hover requires moving the pointer away first, or you re-hover an element the mouse never left and test nothing.
+- **A control that opens a panel does nothing once that panel is open.** Only visible after the walk finishes: the button is recognizable as already-open from the edge that opened it. This also settles the nav-item case — a link to the view you are on is inert whether or not it carries `aria-current`.
+- **A `<select>` cannot be verified by clicking.** It answers to choosing an option, so a click on one always looks dead. Until the walker can pick a value it is reported as skipped, not as a finding — an untested control, not a broken one.
 
 ## Layout
 
@@ -116,8 +145,7 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 
 ## Next
 
-- Seed the walk from an App Atlas route map instead of discovering blind, and report static/dynamic disagreement.
-- Emit a replayable script per verified edge so the inner loop replays instead of re-walking.
-- Form input (v1 only clicks), auth/session support, network mocking for isolation.
-- The LLM healer: same-state-redesigned vs. new-state vs. broken, with confidence surfaced.
-- Mobile via an adapter (Maestro), once the graph format has settled.
+See [ROADMAP.md](ROADMAP.md). The short version: get past the login screen
+(session reuse, then form input), then make the inner loop replay instead of
+re-explore, then the App Atlas pairing and a graph viewer. The LLM healer comes
+last, on purpose — the deterministic core has to earn trust first.
