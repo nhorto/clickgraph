@@ -125,6 +125,37 @@ async function pickOption(page: Page, selector: Selector): Promise<OptionChoice 
 }
 
 /**
+ * Find the control again — and find out quickly when it cannot be found.
+ *
+ * Two problems with one answer. Playwright waits five seconds before admitting
+ * a selector matches nothing, and on a real dashboard a third of the controls
+ * matched nothing: 150 of a 220-second walk was spent waiting to be told what
+ * `count()` answers immediately.
+ *
+ * And they matched nothing because of the selector, not the app. The name here
+ * is derived from the DOM; Playwright derives its own from the accessible-name
+ * algorithm; the two disagree over decorative content, CSS text-transform and
+ * title attributes. Rather than chase an algorithm this cannot reproduce, fall
+ * back to the structural path — which both sides resolve with the same CSS
+ * engine — and let the durable selector be merely preferred, not required.
+ */
+async function locate(page: Page, el: ElementDescriptor): Promise<Selector | null> {
+  const found = async (selector: Selector) => {
+    try {
+      return (await resolve(page, selector).count()) > 0;
+    } catch {
+      return false;
+    }
+  };
+  if (await found(el.selector)) return el.selector;
+  if (el.fallback) {
+    const alt: Selector = { strategy: 'css', value: el.fallback, label: el.selector.label };
+    if (await found(alt)) return alt;
+  }
+  return null;
+}
+
+/**
  * Will this form submit as it stands, or will the browser refuse it?
  *
  * `checkValidity` is the browser's own answer, which beats reading the markup
@@ -245,7 +276,11 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     await settle(page, config.settleMs);
     for (const action of path) {
       try {
-        await resolve(page, action.selector).click({ timeout: 5000 });
+        const step = resolve(page, action.selector);
+        // A step that is not there will not appear by waiting five seconds for
+        // it, and the whole path fails either way — so fail on the count.
+        if ((await step.count()) === 0) return false;
+        await step.click({ timeout: 5000 });
         await settle(page, config.settleMs);
       } catch {
         return false;
@@ -362,13 +397,26 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           atSnapshot = await captureState(page);
         }
 
+        // Everything below acts on the control, so find it first. Like the
+        // select and the form checks under it, this can only run once the
+        // browser is actually sitting on the page.
+        const target = await locate(page, el);
+        if (!target) {
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label,
+            reason: 'unreachable',
+            detail: 'not on the page when the walk came back to this state',
+          });
+          continue;
+        }
+
         // A select answers to choosing an option, never to being clicked, so it
         // needs a different action or it is guaranteed to look dead. This has to
         // come after the state has been re-entered above — the option list can
         // only be read once the browser is actually sitting on the page.
         let choice: OptionChoice | null = null;
         if (el.tag === 'select') {
-          choice = await pickOption(page, el.selector);
+          choice = await pickOption(page, target);
           if (!choice) {
             skipped.push({
               nodeId: state.nodeId, label: el.selector.label,
@@ -406,14 +454,16 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           let unfillable: string | null = null;
           for (const field of fields) {
             try {
+              const at = await locate(page, field);
+              if (!at) throw new Error('field not found');
               if (field.tag === 'select') {
-                const opt = await pickOption(page, field.selector);
+                const opt = await pickOption(page, at);
                 if (!opt) continue; // nothing else to choose; leave it as it stands
-                await resolve(page, field.selector).selectOption(opt.value, { timeout: 5000 });
+                await resolve(page, at).selectOption(opt.value, { timeout: 5000 });
                 filled.push({ label: field.selector.label, value: opt.label });
               } else {
                 const value = synthesize(field);
-                await resolve(page, field.selector).fill(value, { timeout: 5000 });
+                await resolve(page, at).fill(value, { timeout: 5000 });
                 filled.push({ label: field.selector.label, value });
               }
             } catch {
@@ -439,7 +489,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // tests nothing: native validation refuses the submission and changes
         // no DOM, so a working control reads as dead. Left unhandled, every
         // form with a required field in every app is reported broken.
-        if (el.formSubmit && !(await formWillSubmit(page, el.selector))) {
+        if (el.formSubmit && !(await formWillSubmit(page, target))) {
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
             reason: 'needs-input',
@@ -454,23 +504,23 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         const before = atSnapshot;
         const action: Action = choice
           ? {
-              kind: 'select', selector: el.selector, role: el.role, name: el.name,
+              kind: 'select', selector: target, role: el.role, name: el.name,
               value: choice.label,
             }
           : filled.length > 0
             ? {
-                kind: 'fill', selector: el.selector, role: el.role, name: el.name,
+                kind: 'fill', selector: target, role: el.role, name: el.name,
                 fill: filled,
               }
-            : { kind: 'click', selector: el.selector, role: el.role, name: el.name };
+            : { kind: 'click', selector: target, role: el.role, name: el.name };
 
         const watch = new ActionWatch(page);
         let clickFailed = false;
         try {
           if (choice) {
-            await resolve(page, el.selector).selectOption(choice.value, { timeout: 5000 });
+            await resolve(page, target).selectOption(choice.value, { timeout: 5000 });
           } else {
-            await resolve(page, el.selector).click({ timeout: 5000 });
+            await resolve(page, target).click({ timeout: 5000 });
           }
           await settle(page, config.settleMs);
         } catch {
@@ -484,7 +534,8 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           atSnapshot = null;
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
-            reason: 'budget', detail: 'element could not be clicked (not actionable within 5s)',
+            reason: 'unreachable',
+            detail: 'found on the page, but never became clickable within 5s',
           });
           continue;
         }
@@ -505,7 +556,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             // probe silently tests nothing.
             await page.mouse.move(0, 0);
             await page.waitForTimeout(50);
-            await resolve(page, el.selector).hover({ timeout: 5000 });
+            await resolve(page, target).hover({ timeout: 5000 });
             await settle(page, config.settleMs);
           } catch {
             /* not hoverable either — keep the click result */
