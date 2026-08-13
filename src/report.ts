@@ -40,6 +40,18 @@ export function reportWalk(graph: UIGraph): string {
     if (extra > 0) lines.push(c.dim(`  … and ${extra} more`));
     lines.push(c.dim('  Anything below was walked against an app that is already unhealthy.'));
   }
+  // A gated app that walks its own login form has covered none of the thing
+  // under test, and its report otherwise looks like any other clean run.
+  if (load && load.likelyAuthWall) {
+    lines.push('');
+    lines.push(c.yellow(c.bold('The entry page looks like a login screen')));
+    lines.push(
+      c.dim('  Everything below describes the login page, not the app behind it.'),
+    );
+    lines.push(
+      c.dim('  Sign in once and save the session, then pass --storage-state <path>.'),
+    );
+  }
   if (load && load.interactiveFound === 0) {
     lines.push('');
     lines.push(c.yellow(c.bold('No interactive controls found on the entry page')));

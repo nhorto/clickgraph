@@ -24,6 +24,8 @@ export interface ElementDescriptor {
   name: string;
   tag: string;
   href: string | null;
+  /** Raw `type` for inputs. `password` is what identifies a login wall. */
+  inputType: string | null;
   disabled: boolean;
   /** Marked as the active tab or current page via aria-selected / aria-current. */
   selected: boolean;
@@ -135,6 +137,12 @@ export interface WalkConfig {
   maxDepth: number;
   settleMs: number;
   allowDangerous: boolean;
+  /**
+   * Path to a Playwright storage-state file, so the walk starts logged in.
+   * Only the path is recorded in the graph — the file holds session cookies and
+   * must never be copied into an artifact that gets committed.
+   */
+  storageState?: string;
 }
 
 /**
@@ -149,6 +157,12 @@ export interface LoadHealth {
   httpErrors: string[];
   /** Controls found on the entry page. Zero means the walk saw nothing to do. */
   interactiveFound: number;
+  /**
+   * The entry page looks like a login screen. Without this, walking a gated app
+   * reports a clean run of its login form and says nothing about the app behind
+   * it — a pass that covers none of the thing under test.
+   */
+  likelyAuthWall?: boolean;
 }
 
 export interface UIGraph {

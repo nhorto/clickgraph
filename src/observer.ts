@@ -163,6 +163,10 @@ function extractPageData() {
       name,
       tag,
       href: el.getAttribute('href'),
+      // The raw input type, kept because role flattens the ones that matter:
+      // password identifies a login wall, and the rest decide what a future
+      // walker would be allowed to type into a field.
+      inputType: tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
       disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       // Already the active tab / current page. Clicking it is expected to do
       // nothing, so a no-effect result here is not a defect.

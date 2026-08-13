@@ -38,7 +38,13 @@ export interface WalkVerdict {
   walkedAt: string;
   ok: boolean;
   verdict: string;
-  load: { healthy: boolean; errors: string[]; interactiveFound: number };
+  load: {
+    healthy: boolean;
+    errors: string[];
+    interactiveFound: number;
+    /** True means the run describes a login page, not the app behind it. */
+    likelyAuthWall: boolean;
+  };
   findings: VerdictFinding[];
   coverage: VerdictCoverage;
   graphPath: string;
@@ -110,6 +116,11 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   let verdict: string;
   if (!healthy) {
     verdict = `the app reported errors as it loaded — anything below was walked against an app that is already unhealthy`;
+  } else if (load.likelyAuthWall) {
+    // Said before any count of what passed. A gated app walks its login form
+    // cleanly, and that report is indistinguishable from a real one.
+    verdict =
+      'the entry page looks like a login screen — this run describes the login page, not the app behind it (sign in once, save the session, and pass --storage-state)';
   } else if (nothingWalked) {
     verdict =
       'nothing was walked — this run proves nothing about the app (it may have failed to load, or may need authentication)';
@@ -130,12 +141,15 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
     command: 'walk',
     url: graph.baseUrl,
     walkedAt: graph.walkedAt,
-    ok: healthy && !nothingWalked,
+    // A walk that never got past the login screen proved nothing about the app,
+    // which is the same failure as a walk that exercised nothing at all.
+    ok: healthy && !nothingWalked && !load.likelyAuthWall,
     verdict,
     load: {
       healthy,
       errors: [...load.httpErrors, ...load.consoleErrors],
       interactiveFound: load.interactiveFound,
+      likelyAuthWall: Boolean(load.likelyAuthWall),
     },
     findings,
     coverage: coverageOf(graph),

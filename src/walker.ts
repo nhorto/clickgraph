@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { chromium, type Browser, type Page } from 'playwright';
 import type {
   Action, ElementDescriptor, LoadHealth, SkippedElement, UIEdge, UIGraph, UINode, WalkConfig,
@@ -59,6 +60,25 @@ const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
   settleMs: 250,
   allowDangerous: false,
 };
+
+/**
+ * Does the entry page look like a login screen?
+ *
+ * A visible password field is the signal that stands on its own. The weaker
+ * case — a sign-in control on a route named for authentication — is included
+ * because passwordless and SSO front doors have no password field at all.
+ *
+ * This only ever adds a caveat to the report. Getting it wrong costs a sentence;
+ * missing a login wall costs a clean run that covered nothing but the door.
+ */
+function looksLikeAuthWall(url: string, elements: ElementDescriptor[]): boolean {
+  if (elements.some((el) => el.inputType === 'password')) return true;
+  const authRoute = /(^|\/)(login|signin|sign-in|auth|authenticate|sso)(\/|$|\?)/i.test(url);
+  const signInControl = elements.some((el) =>
+    /\b(sign|log)\s?in\b|\bcontinue with\b/i.test(el.name),
+  );
+  return authRoute && signInControl;
+}
 
 function isDangerous(el: ElementDescriptor): boolean {
   const text = `${el.name} ${el.selector.label}`;
@@ -137,7 +157,17 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   let actionsUsed = 0;
 
   const browser: Browser = await chromium.launch();
-  const context = await browser.newContext({ acceptDownloads: false });
+  if (config.storageState && !existsSync(config.storageState)) {
+    await browser.close();
+    throw new Error(
+      `no storage state at ${config.storageState} — create one by signing in once, ` +
+        `then saving the session with Playwright's context.storageState({ path })`,
+    );
+  }
+  const context = await browser.newContext({
+    acceptDownloads: false,
+    storageState: config.storageState,
+  });
   const page = await context.newPage();
 
   // Autonomous walking must never hang on a modal or leak tabs.
@@ -172,7 +202,13 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       consoleErrors: observedLoad.consoleErrors,
       httpErrors: observedLoad.httpErrors,
       interactiveFound: entry.elements.length,
+      likelyAuthWall: looksLikeAuthWall(entry.url, entry.elements),
     };
+    if (load.likelyAuthWall) {
+      log(config.storageState
+        ? '  entry page still looks like a login screen — the saved session may have expired'
+        : '  entry page looks like a login screen — walking the door, not the app');
+    }
     nodes[entry.nodeId] = {
       id: entry.nodeId,
       url: entry.url,
