@@ -81,6 +81,20 @@ function looksLikeAuthWall(url: string, elements: ElementDescriptor[]): boolean 
   return authRoute && signInControl;
 }
 
+/**
+ * Controls that answer to typing rather than to a click.
+ *
+ * A click on a text field focuses it and changes nothing else, so every search
+ * box and every form field in an app reads as a dead control. That is the same
+ * mistake the select used to make, at far greater scale.
+ */
+function isTextEntry(el: ElementDescriptor): boolean {
+  if (el.tag === 'textarea') return true;
+  if (el.tag !== 'input') return false;
+  return !['checkbox', 'radio', 'submit', 'button', 'reset', 'file', 'range', 'color']
+    .includes(el.inputType ?? 'text');
+}
+
 interface OptionChoice {
   value: string;
   label: string;
@@ -283,6 +297,16 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
             reason: 'dangerous', detail: 'matched a destructive-action pattern',
+          });
+          continue;
+        }
+        if (isTextEntry(el)) {
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label,
+            reason: 'needs-input',
+            detail: el.inputType === 'password'
+              ? 'a password field is never typed into'
+              : 'a text field responds to typing, not to a click',
           });
           continue;
         }
