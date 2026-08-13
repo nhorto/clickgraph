@@ -1,6 +1,14 @@
 node_modules/
 dist/
+# Walk output. In this repo the graph is only ever produced against the fixture,
+# so it is local noise. In a project being tested the graph is meant to be
+# committed — it is the baseline a diff compares against.
 .uigraph/
+
+# The session file never is, in any project. It holds live cookies.
+# Listed separately so un-ignoring the graph cannot take this with it.
+.uigraph/session.json
+session.json
 *.log
 .DS_Store
 
