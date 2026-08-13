@@ -37,6 +37,12 @@ node dist/cli.js walk "$URL" --quiet >/tmp/clickgraph-base.txt 2>&1
 check "$?" "0" "baseline walk succeeds"
 grep -q 'NO EFFECT.*"Export"' /tmp/clickgraph-base.txt; check "$?" "0" "finds the unwired Export button"
 grep -q 'ERROR.*"Save settings"' /tmp/clickgraph-base.txt; check "$?" "0" "finds the 500 on Save settings"
+grep -q 'NO EFFECT.*"Filter orders by region"' /tmp/clickgraph-base.txt
+check "$?" "0" "finds the select whose choice is ignored"
+# The working select must not be reported. Clicking a select can never change
+# anything, so before it was given a value this one looked exactly as dead.
+grep -q '"Filter orders by status"' /tmp/clickgraph-base.txt
+check "$?" "1" "does not flag the select that works"
 grep -q '1 skipped (dangerous)' /tmp/clickgraph-base.txt; check "$?" "0" "refuses to click Delete account"
 grep -q '1 skipped (external)' /tmp/clickgraph-base.txt; check "$?" "0" "skips the off-origin link"
 
@@ -87,11 +93,18 @@ node -e '
   const v = require("/tmp/clickgraph-walk.json");
   const fail = (m) => { console.error(m); process.exit(1); };
   if (v.ok !== true) fail("a healthy app that walked should be ok");
-  if (v.findings.length !== 2) fail(`want the 2 planted defects, got ${v.findings.length}`);
-  if (!v.findings.some((f) => f.severity === "error" && /Save settings/.test(f.control)))
-    fail("the 500 is not reported as an error");
-  if (!v.findings.some((f) => f.severity === "no-effect" && /Export/.test(f.control)))
-    fail("the unwired button is not reported as no-effect");
+  // Named rather than counted, so adding a planted defect to the fixture does
+  // not falsify a check that is still describing the truth.
+  const want = [
+    ["error", /Save settings/, "the 500 is not reported as an error"],
+    ["no-effect", /Export/, "the unwired button is not reported as no-effect"],
+    ["no-effect", /Filter orders by region/, "the ignored select is not reported"],
+  ];
+  for (const [severity, re, msg] of want) {
+    if (!v.findings.some((f) => f.severity === severity && re.test(f.control))) fail(msg);
+  }
+  if (v.findings.length !== want.length)
+    fail(`only the planted defects should be findings, got ${v.findings.length}`);
   if (!v.coverage.skipped.some((s) => s.reason === "dangerous")) fail("skips must survive into JSON");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "walk --json carries both planted defects and the skip reasons"
@@ -109,8 +122,12 @@ node -e '
   if (v.ok !== false) fail("ok must be false when the run never got past the door");
   if (!v.load.likelyAuthWall) fail("the login wall was not detected");
   if (!/login screen/.test(v.verdict)) fail("the verdict does not say it walked a login page");
+  // Clicking a text field focuses it and changes nothing, so every form field in
+  // every app would otherwise be reported as a dead control.
+  if (v.findings.some((f) => /Email|Password/.test(f.control)))
+    fail("a text field was reported as a dead control");
 ' 2>>/tmp/clickgraph-json-err.txt
-check "$?" "0" "says it walked the login page, not the app"
+check "$?" "0" "says it walked the login page, and does not call its fields dead"
 
 cat > /tmp/clickgraph-session.json <<'JSON'
 { "cookies": [ { "name": "session", "value": "test-session", "domain": "localhost",

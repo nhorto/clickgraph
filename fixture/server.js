@@ -69,6 +69,19 @@ const routes = {
   '/orders': page('Orders', `
     <h1>Orders</h1>
     <ul><li><a href="/orders/1042" data-testid="order-link"${BREAK ? ' onclick="return false"' : ''}>Order #1042</a></li></ul>
+    <label>Status
+      <select id="status-filter" data-testid="status-filter" aria-label="Filter orders by status">
+        <option value="all">All</option>
+        <option value="open">Open</option>
+        <option value="shipped">Shipped</option>
+      </select>
+    </label>
+    <label>Region
+      <select id="region-filter" data-testid="region-filter" aria-label="Filter orders by region">
+        <option value="all">All regions</option>
+        <option value="emea">EMEA</option>
+      </select>
+    </label>
     <button id="export" data-testid="export">Export</button>
     <button id="refresh" data-testid="refresh">Refresh</button>
     ${process.env.FEATURE === '1' ? `
@@ -77,6 +90,11 @@ const routes = {
     <p id="status"></p>
     <script>
       // "Export" is intentionally wired to nothing at all.
+      // The status filter works; the region filter is a planted defect — a
+      // select that renders its options and does nothing with the choice.
+      document.getElementById('status-filter').addEventListener('change', (e) => {
+        document.getElementById('status').textContent = 'Filtered by ' + e.target.value;
+      });
       ${process.env.FEATURE === '1' ? `
       // A just-shipped feature: "Print invoice" works, "Archive" was never wired up.
       document.getElementById('print').addEventListener('click', async () => {
