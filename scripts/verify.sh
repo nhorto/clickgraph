@@ -6,6 +6,8 @@
 #   B  a broken interaction is caught as a regression
 #   C  a newly added control that does nothing is caught on arrival
 #   D  --json says the same thing the report and the exit code say
+#   E  an app behind a login screen is not reported as a clean run
+#   F  a form is only judged once it has been filled in
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -149,6 +151,52 @@ check "$?" "0" "finds both planted defects behind the gate"
 
 node dist/cli.js walk "$URL" --quiet --storage-state /tmp/does-not-exist.json >/dev/null 2>&1
 check "$?" "2" "a missing storage-state file is a usage error, not a silent walk"
+
+echo "F: forms, filled and unfilled"
+start_fixture PORT="$PORT"
+# Default: neither form is submitted, and neither is called broken for it. An
+# unfilled form with a required field cannot submit — blaming the button for
+# that would report every signup and checkout form in every app as dead.
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-forms-off.json \
+  >/tmp/clickgraph-forms-off-out.json 2>/dev/null
+check "$?" "0" "a walk with unfilled forms still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-forms-off-out.json");
+  const g = require("/tmp/clickgraph-forms-off.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = v.findings.map((f) => f.control).join(" ");
+  if (/Create account|Send feedback/.test(dead))
+    fail(`a form submit was called dead without being filled: ${dead}`);
+  const submits = g.coverage.skipped.filter((s) => /refuses to submit/.test(s.detail ?? ""));
+  if (submits.length !== 2) fail(`want both forms skipped with a reason, got ${submits.length}`);
+  if (g.edges.some((e) => e.action.kind === "fill")) fail("a form was filled without --fill-forms");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "leaves both forms unsubmitted, and says so rather than calling them dead"
+
+# --fill-forms: the working form is proven, and the one that swallows its own
+# submission is caught. Nothing but filling it in can tell those two apart.
+node dist/cli.js walk "$URL" --quiet --json --fill-forms --out /tmp/clickgraph-forms-on.json \
+  >/tmp/clickgraph-forms-on-out.json 2>/dev/null
+check "$?" "0" "a walk that fills forms still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-forms-on-out.json");
+  const g = require("/tmp/clickgraph-forms-on.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (!v.findings.some((f) => f.severity === "no-effect" && /Send feedback/.test(f.control)))
+    fail("the form that drops its submission was not caught");
+  if (v.findings.some((f) => /Create account/.test(f.control)))
+    fail("the form that works was reported as broken");
+  const signup = g.edges.find((e) => e.action.kind === "fill" && /Create account/.test(e.action.selector.label));
+  if (!signup) fail("the signup form was never filled");
+  if (signup.outcome.kind === "no-effect") fail("submitting the working form did nothing");
+  // Whatever a walk creates must be traceable back to the walk. Values chosen
+  // from a selects own options are the apps words, so only typed ones count.
+  const typed = signup.action.fill.filter((f) => !/^combobox/.test(f.label));
+  if (typed.length === 0) fail("nothing was typed into the signup form");
+  if (!typed.every((f) => /clickgraph-test/.test(f.value)))
+    fail(`a value was typed that is not obviously synthetic: ${JSON.stringify(typed)}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "catches the form that drops its submission, clears the one that works"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
