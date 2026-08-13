@@ -94,6 +94,28 @@ Keeping structure *out* of the node id is what lets a page gain a button without
 
 **Known limitation, stated plainly:** two genuinely different screens sharing a route *and* their headings collapse into one node. v1 errs toward under-splitting, because a missed split is quieter than a graph that resets every commit.
 
+## Apps behind a login
+
+A gated app walks its own login form perfectly, and that report looks exactly
+like a real one — so a login screen on the entry page is detected, said plainly,
+and fails the run. To get past it, sign in once yourself:
+
+```bash
+npx clickgraph login http://localhost:5173
+```
+
+A browser window opens, you sign in, you press Enter. Your credentials go into
+your own browser and nowhere else — the only thing written is the session state
+the browser produces, saved to `.uigraph/session.json`. That file holds live
+cookies, so it is gitignored and should stay that way.
+
+```bash
+npx clickgraph diff http://localhost:5173 --storage-state .uigraph/session.json
+```
+
+When the session expires the diff says so — "the entry page now looks like a
+login screen" — instead of reporting the entire app as missing.
+
 ## Safety
 
 The walker clicks autonomously against a real app, so by default it refuses controls matching destructive patterns (delete, remove, sign out, pay, purchase, deactivate), skips off-origin links, and skips disabled controls. All of them are reported as *skipped with a reason* — never as passing. `--allow-dangerous` overrides, and should only be pointed at a disposable environment.

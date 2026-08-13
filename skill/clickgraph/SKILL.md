@@ -51,6 +51,30 @@ Useful flags: `--max-actions <n>` and `--max-depth <n>` to bound a big app,
 `--settle <ms>` to raise the DOM-quiet period if working controls look dead in
 an app that updates late.
 
+## Apps behind a login
+
+If `load.likelyAuthWall` is true, the run describes the login page and nothing
+else. `ok` is false for exactly that reason. Do not report it as a pass, and do
+not try to sign in yourself — never type credentials into the app.
+
+Tell the user to run this once, sign in themselves in the window that opens, and
+press Enter:
+
+```bash
+npx clickgraph login http://localhost:5173
+```
+
+That saves `.uigraph/session.json`, which holds live cookies. It must stay out of
+git — never commit it, paste it, or read its contents. From then on:
+
+```bash
+npx clickgraph diff http://localhost:5173 --storage-state .uigraph/session.json
+```
+
+A diff whose only regression is "the entry page now looks like a login screen"
+means the session expired, not that the app broke. Say so, and ask for a fresh
+`login` run rather than chasing it as a bug.
+
 ## Reading the verdict
 
 `--json` prints a compact object, not the whole graph. Read `ok` and `verdict`
@@ -106,6 +130,7 @@ you did not touch are worth surfacing, not silently rewriting.
 
 ## What it cannot do yet
 
-Clicks and hovers only — it does not type into forms, and it has no
-authentication support, so it cannot walk past a login screen. If the app needs
-a login, say that rather than reporting a clean walk of the login page.
+Clicks and hovers only. It does not type into fields, and a `<select>` is
+reported as skipped rather than tested, because clicking one can never change
+anything. Anything reachable only by filling in a form is outside what a run
+proves.

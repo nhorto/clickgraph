@@ -31,9 +31,11 @@ friction rank the rest of this file.
 The tool is currently locked out of most real apps at the front door.
 Deliberately split in two, because one half is much cheaper than the other:
 
-- [ ] Auth via session reuse: accept a Playwright storage-state file
-      (`--storage-state`) or a one-time setup script, then walk logged in.
-      Small lift, opens the majority of real apps.
+- [x] Auth via session reuse: `--storage-state <path>` walks signed in, and
+      `clickgraph login <url>` captures the session by opening a browser and
+      waiting while a human signs in. A login screen on the entry page is
+      detected, reported, and fails the run — a gated app used to walk its own
+      login form and call it clean.
 - [ ] Form input: selects first — a finite option set and no free text, and
       they are already being skipped as `needs-input`. Then text fields with
       config-provided values. Submission gets the same caution as the
