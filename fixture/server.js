@@ -1,0 +1,121 @@
+/**
+ * A deliberately imperfect demo app, used to prove the walker finds real problems.
+ *
+ * Planted defects (what a correct walk must report):
+ *   1. /orders  "Export"        — button with no handler at all  → no-effect
+ *   2. /settings "Save settings" — POSTs to an endpoint that 500s → error
+ *
+ * Planted traps (what a correct walk must NOT do):
+ *   3. /settings "Delete account" — must be skipped as dangerous
+ *   4. /settings external link    — must be skipped as off-origin
+ *   5. /settings "Advanced" button — disabled, must be skipped
+ *
+ * Run with BREAK=1 to simulate a regression: the working "Refresh" button
+ * loses its handler and the order-detail link stops navigating.
+ */
+import { createServer } from 'node:http';
+
+const PORT = Number(process.env.PORT ?? 4173);
+const BREAK = process.env.BREAK === '1';
+
+const page = (title, body) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>${title}</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  nav a { margin-right: 1rem; }
+  button { padding: .4rem .8rem; margin: .25rem .25rem .25rem 0; }
+  button[disabled] { opacity: .5; }
+  #modal { border: 2px solid #333; padding: 1rem; margin-top: 1rem; }
+</style></head>
+<body>
+<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/about">About</a></nav>
+${body}
+</body></html>`;
+
+const routes = {
+  '/': page('Home', `
+    <h1>Acme Dashboard</h1>
+    <p>Welcome back.</p>
+    <button id="open-welcome" data-testid="open-welcome">Show tips</button>
+    <div id="slot"></div>
+    <script>
+      document.getElementById('open-welcome').addEventListener('click', () => {
+        document.getElementById('slot').innerHTML =
+          '<div id="modal"><h2>Getting started</h2><p>Three tips for you.</p>' +
+          '<button id="dismiss-tips">Dismiss</button></div>';
+        document.getElementById('dismiss-tips').addEventListener('click', () => {
+          document.getElementById('slot').innerHTML = '';
+        });
+      });
+    </script>`),
+
+  '/orders': page('Orders', `
+    <h1>Orders</h1>
+    <ul><li><a href="/orders/1042" data-testid="order-link"${BREAK ? ' onclick="return false"' : ''}>Order #1042</a></li></ul>
+    <button id="export" data-testid="export">Export</button>
+    <button id="refresh" data-testid="refresh">Refresh</button>
+    ${process.env.FEATURE === '1' ? `
+    <button id="print" data-testid="print">Print invoice</button>
+    <button id="archive" data-testid="archive">Archive</button>` : ''}
+    <p id="status"></p>
+    <script>
+      // "Export" is intentionally wired to nothing at all.
+      ${process.env.FEATURE === '1' ? `
+      // A just-shipped feature: "Print invoice" works, "Archive" was never wired up.
+      document.getElementById('print').addEventListener('click', async () => {
+        await fetch('/api/orders');
+        document.getElementById('status').textContent = 'Sent to printer';
+      });` : ''}
+      ${BREAK ? '' : `
+      document.getElementById('refresh').addEventListener('click', async () => {
+        await fetch('/api/orders');
+        document.getElementById('status').textContent = 'Refreshed';
+      });`}
+    </script>`),
+
+  '/orders/1042': page('Order #1042', `
+    <h1>Order #1042</h1>
+    <p>Two items, shipped.</p>
+    <a href="/orders">Back to orders</a>`),
+
+  '/settings': page('Settings', `
+    <h1>Settings</h1>
+    <button id="save" data-testid="save">Save settings</button>
+    <button id="advanced" disabled>Advanced options</button>
+    <button id="delete-account">Delete account</button>
+    <p><a href="https://example.com/docs">Read the docs</a></p>
+    <script>
+      document.getElementById('save').addEventListener('click', async () => {
+        await fetch('/api/save', { method: 'POST' });
+      });
+      document.getElementById('delete-account').addEventListener('click', () => {
+        document.body.innerHTML = '<h1>Account deleted</h1>';
+      });
+    </script>`),
+
+  '/about': page('About', `<h1>About</h1><p>Acme, since 1998.</p>`),
+};
+
+createServer((req, res) => {
+  const path = req.url.split('?')[0];
+
+  if (path === '/api/orders') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end('{"orders":[{"id":1042}]}');
+  }
+  if (path === '/api/save') {
+    // Planted defect: this endpoint is broken.
+    res.writeHead(500, { 'content-type': 'application/json' });
+    return res.end('{"error":"could not persist settings"}');
+  }
+
+  const body = routes[path];
+  if (!body) {
+    res.writeHead(404, { 'content-type': 'text/html' });
+    return res.end(page('Not found', '<h1>404</h1>'));
+  }
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.end(body);
+}).listen(PORT, () => {
+  console.log(`fixture app on http://localhost:${PORT}${BREAK ? ' (BREAK=1)' : ''}`);
+});
