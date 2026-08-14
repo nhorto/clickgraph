@@ -36,7 +36,15 @@ function extractPageData() {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return false;
     const style = window.getComputedStyle(el);
-    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') {
+      return false;
+    }
+    // A control the app has hidden from the accessibility tree is not available
+    // to anyone — this is how a well-built modal says that nothing behind it can
+    // be reached. Without this, an open dialog leaves the whole page underneath
+    // it enumerated as clickable, and every one of those controls comes back
+    // covered by the dialog's own backdrop.
+    return !el.closest('[aria-hidden="true"], [inert]');
   }
 
   function accessibleName(el: any): string {
