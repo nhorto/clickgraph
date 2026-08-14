@@ -108,6 +108,35 @@ function isTextEntry(el: ElementDescriptor): boolean {
  */
 const ACTION_TIMEOUT = 2000;
 
+/**
+ * Why a control could not be acted on, in the app's terms.
+ *
+ * Playwright knows exactly which actionability check failed and says so in its
+ * call log. Flattening all of them into "could not be clicked" throws away the
+ * only part a reader can act on — a control covered by a modal, a control still
+ * animating, and a control in a drawer that was never opened are three
+ * different gaps in coverage, and only one of them is about timing.
+ */
+const NOT_ACTIONABLE: [RegExp, string][] = [
+  [/outside of the viewport/,
+    'parked outside the viewport — it belongs to a panel or drawer that was not ' +
+    'open when the walk reached this state'],
+  [/intercepts pointer events/,
+    'covered by something else on the page, so the click could not reach it'],
+  [/not stable/,
+    'still moving when the walk tried to click it — an animation outliving the settle window'],
+  [/not visible/, 'on the page but no longer visible when the walk came back to this state'],
+  [/not enabled/, 'disabled by the time the walk reached it'],
+];
+
+function whyNotActionable(err: unknown): string {
+  const message = err instanceof Error ? err.message : '';
+  for (const [pattern, reason] of NOT_ACTIONABLE) {
+    if (pattern.test(message)) return reason;
+  }
+  return 'never became clickable';
+}
+
 interface OptionChoice {
   value: string;
   label: string;
@@ -527,10 +556,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
 
         const watch = new ActionWatch(page);
         let clickFailed = false;
-        // Why it could not be acted on, in the app's terms rather than the
-        // browser driver's. "Outside the viewport" is the one worth naming: it
-        // means a real control belonging to a panel this walk never opened.
-        let failure = 'found on the page, but never became clickable';
+        let failure = 'never became clickable';
         try {
           if (choice) {
             await resolve(page, target).selectOption(choice.value, { timeout: ACTION_TIMEOUT });
@@ -540,10 +566,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           await settle(page, config.settleMs);
         } catch (err) {
           clickFailed = true;
-          if (err instanceof Error && /outside of the viewport/.test(err.message)) {
-            failure = 'parked outside the viewport — it belongs to a panel or drawer ' +
-              'that was not open when the walk reached this state';
-          }
+          failure = whyNotActionable(err);
         }
         const observed = watch.stop();
         actionsUsed++;
