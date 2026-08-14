@@ -69,15 +69,27 @@ Deliberately split in two, because one half is much cheaper than the other:
 
 ## Phase 3 — a fast inner loop
 
-Speed is the real ceiling: a walk of a real dashboard costs about 2.9 seconds
-per action against 0.6 on the local fixture, and the difference is almost
-entirely the app reloading. A bounded 60-action walk takes just under three
-minutes; the App Atlas UI ran past ten and still hit its state budget.
+Speed is the real ceiling, and the first diagnosis of it was wrong.
 
-It is now this project's own bottleneck too. Adding two routes to the fixture
-took one walk from 31 to 49 seconds and `verify.sh` to eight minutes — the
-suite is ten walks, and it is the thing standing between an idea and knowing
-whether the idea worked.
+The 2.9 seconds per action measured on a real dashboard was read as the app
+reloading. It was not. 150 of those 220 seconds were thirty controls that could
+not be found at all, each one waiting out Playwright's five-second default
+before being written off — a tool bug wearing an app's clothes, and an average
+per-action figure was exactly the wrong instrument to see it with. Fixing the
+selectors and shortening the wait took the same walk to 108 seconds and from 60
+interactions to 77; respecting `inert` took it to 32 states and 90 interactions.
+What is left is about 1.2 seconds per action, and *now* the reloads are the
+biggest remaining term.
+
+- [x] **Found and fixed: the walker could not find its own controls.** See the
+      README's list of rules. The lesson worth keeping is the measurement one —
+      the per-action average hid a failure mode that had nothing to do with the
+      thing it was being used to argue about.
+
+It is this project's own bottleneck too. Adding two routes to the fixture took
+one walk from 31 to 49 seconds and `verify.sh` to eight minutes — the suite is
+ten walks, and it is the thing standing between an idea and knowing whether the
+idea worked.
 
 - [ ] Per-edge replay scripts: `diff` currently re-explores everything.
       Replaying the baseline's known edges deterministically is the cheap

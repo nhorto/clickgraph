@@ -171,13 +171,12 @@ Walked three real codebases, which found bugs the fixture never could. Current r
 
 | App | Stack | States | Walked | Findings |
 |---|---|---|---|---|
-| Vite dashboard | React + Tailwind SPA | 40 (budget) | 160 | 0 |
-| Marketing site | Next.js App Router | 6 | 66 | 0 |
+| Vite dashboard | React + Tailwind SPA | 32 | 90 (budget) | 0 |
+| Marketing site | Next.js App Router | 12 | 82 | 0 |
 | App Atlas web | React + React Flow SPA | 40 (budget) | 83 | 0 |
 
-Two of the three hit the default state budget rather than running out of app,
-and reported the 3,583 and 5,352 controls they never reached rather than
-implying they had covered everything.
+Runs that stop at a budget say so and report what they never reached, rather
+than implying they covered everything.
 
 Every false positive those runs exposed is now fixed, and each fix is a rule worth keeping:
 
@@ -187,6 +186,8 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **Some controls answer to hover, not click.** A dashboard of glossary terms opened tooltips on `pointerenter` while the click handler toggled them shut — sixteen working tiles read as dead. Probing hover requires moving the pointer away first, or you re-hover an element the mouse never left and test nothing.
 - **A control that opens a panel does nothing once that panel is open.** Only visible after the walk finishes: the button is recognizable as already-open from the edge that opened it. This also settles the nav-item case — a link to the view you are on is inert whether or not it carries `aria-current`.
 - **Controls that answer to typing cannot be verified by clicking.** A `<select>` answers to choosing an option; a text field answers to typing. Clicking either changes nothing, so before this every search box and form field in an app read as a dead control. Selects are now walked by choosing an option they are not already showing. Text fields are only typed into as part of their form.
+- **The tool has to be able to find its own controls again.** A third of the controls on a real dashboard could not be resolved by the selector recorded for them seconds earlier, on the same page, with nothing changed — because the name recorded here comes from the DOM and Playwright's comes from the accessible-name algorithm, and the two disagree over decorative content, CSS `text-transform` and `title` attributes. Chasing that algorithm is a losing game; every element now carries a verified structural path to fall back to. On that dashboard it took a walk from 60 interactions to 77, and from 220 seconds to 108.
+- **A control hidden from the accessibility tree is hidden from the walk.** An open dialog left the whole page behind it enumerated as clickable, so every one of those controls came back covered by the dialog's own backdrop. `aria-hidden` and `inert` are how an app says that; respecting them took the same dashboard from 24 states to 32.
 - **An empty form's submit button is not a dead control.** Clicking it fires native validation, which refuses the submission and changes no DOM — indistinguishable from a button wired to nothing. The browser's own `checkValidity` settles it, and the form is reported as skipped until something fills it in.
 
 ## Layout
