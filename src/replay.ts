@@ -43,11 +43,21 @@ export interface ReplayOptions extends Partial<WalkConfig> {
 interface StateWork {
   node: UINode;
   /**
-   * Controls still to exercise. null until the state has been arrived at —
-   * what is on the screen now is read from the page, not from the baseline,
-   * so a control the baseline never saw is still tested.
+   * The baseline's own edges, still to re-check. null until the state has been
+   * arrived at — what is on the screen now is read from the page, not from the
+   * baseline, so a control the baseline never saw is still tested.
    */
   queue: ElementDescriptor[] | null;
+  /**
+   * Controls here that the baseline has no edge for.
+   *
+   * Kept apart from the queue above because they are not part of the comparison
+   * and must never crowd it out. On a truncated baseline most of these are not
+   * new at all — they are the controls it ran out of budget before reaching —
+   * and walking them first left 47 baseline edges unchecked on a 2,086-control
+   * app in order to walk 72 controls nobody had asked about.
+   */
+  fresh: ElementDescriptor[];
   /** Every control on the screen, which form filling needs to find siblings. */
   elements: ElementDescriptor[];
   /** The shape seen on arrival, so a page reused without a reload is the same page. */
@@ -56,7 +66,7 @@ interface StateWork {
   lost: boolean;
 }
 
-const hasWork = (w: StateWork) => !w.lost && (w.queue === null || w.queue.length > 0);
+const hasBaselineWork = (w: StateWork) => !w.lost && (w.queue === null || w.queue.length > 0);
 
 export async function replay(
   baseUrl: string,
@@ -68,12 +78,30 @@ export async function replay(
   // a baseline that had it on would report every form submit in the app as a
   // control that has gone missing — a difference in how the two runs were
   // invoked, dressed up as a change in the app.
+  //
+  // Spread the caller's options first, with the keys they did not set removed.
+  // Ordering matters: a plain `...overrides` carries `maxActions: undefined`
+  // for every run that did not pass the flag, and that undefined silently
+  // erased the floor computed below — the replay went on sampling a different
+  // 197 controls of 2,086 and the only reason it stopped reporting breakage
+  // was the diff learning to call it coverage.
+  const asked = Object.fromEntries(
+    Object.entries(overrides).filter(([, value]) => value !== undefined),
+  ) as Partial<WalkConfig>;
+
+  const needed = baseline.edges.length;
   const config = resolveConfig(baseUrl, {
     allowDangerous: baseline.config?.allowDangerous,
     fillForms: baseline.config?.fillForms,
-    maxActions: baseline.config?.maxActions,
     settleMs: baseline.config?.settleMs,
-    ...overrides,
+    ...asked,
+    // A diff only compares like with like if the replay can reach every edge
+    // the baseline recorded, so the baseline's own edge count is the floor,
+    // with room on top for controls that are genuinely new. Someone who asks
+    // for a short run still gets one; the coverage report says what it cost.
+    maxActions:
+      asked.maxActions ??
+      Math.max(baseline.config?.maxActions ?? 0, needed + Math.ceil(needed / 4) + 25),
   });
   const log = onProgress ?? (() => {});
 
@@ -96,7 +124,15 @@ export async function replay(
 
   const work = new Map<string, StateWork>();
   for (const node of Object.values(baseline.nodes)) {
-    work.set(node.id, { node, queue: null, elements: [], structure: null, lost: false });
+    work.set(node.id, {
+      node, queue: null, fresh: [], elements: [], structure: null, lost: false,
+    });
+  }
+
+  /** How many baseline edges each state holds, before any of it is enumerated. */
+  const owedByState = new Map<string, number>();
+  for (const edge of baseline.edges) {
+    owedByState.set(edge.from, (owedByState.get(edge.from) ?? 0) + 1);
   }
 
   const session = await openSession(baseUrl, config);
@@ -104,6 +140,36 @@ export async function replay(
 
   /** Where the browser is now, or null when that is no longer known. */
   let at: PageSnapshot | null = null;
+
+  /**
+   * Baseline edges still owed, across every state — counted from the baseline
+   * for states not yet enumerated, and from what is left of the queue for the
+   * rest.
+   */
+  function baselineOwed(): number {
+    let owed = 0;
+    for (const w of work.values()) {
+      if (w.lost) continue;
+      owed += w.queue === null ? (owedByState.get(w.node.id) ?? 0) : w.queue.length;
+    }
+    return owed;
+  }
+
+  /**
+   * Is there budget to spare on a control the baseline knows nothing about?
+   *
+   * This is the whole of the protection, and it belongs here rather than in the
+   * traversal order. Walking new controls first was what let a budget drain
+   * into work outside the comparison; walking them in a separate second pass
+   * fixed that and cost more reloads than the full walk it exists to beat,
+   * because a second traversal has no route left to plan. Reserving the budget
+   * instead keeps both: everything in a state gets done while the browser is
+   * sitting in it, and a baseline edge somewhere else can never be crowded out.
+   */
+  const roomToSpare = () => config.maxActions - actionsUsed > baselineOwed();
+
+  const hasWork = (w: StateWork) =>
+    hasBaselineWork(w) || (!w.lost && w.fresh.length > 0 && roomToSpare());
 
   /** Can this state be worked on without a reload? */
   const seated = (w: StateWork) =>
@@ -147,17 +213,21 @@ export async function replay(
     for (let i = 0; i < queue.length; i++) {
       const el = queue[i];
       const key = controlKey(w.node.id, el.role, el.name);
-      // A control the baseline never saw is the reason this tool exists, and
-      // nothing is known about where it goes. Treated as staying put: guessing
-      // wrong costs one re-entry, and holding it back would put the newest
-      // thing in the app last in line behind everything already known to work.
-      if (!led.has(key) || led.get(key) === null) return queue.splice(i, 1)[0];
+      // A baseline edge that leaves the page where it is. Free, and doing it
+      // now means this state never has to be returned to for it.
+      if (led.get(key) === null) return queue.splice(i, 1)[0];
       const target = work.get(led.get(key)!);
       // A ride to a state with nothing left to do is not a ride. Keep it as the
       // fallback and go on looking for one that earns the exit.
       if (mover === null || (target && hasWork(target))) mover = i;
     }
-    return queue.splice(mover ?? 0, 1)[0];
+    // A control the baseline has no edge for, done while the browser is already
+    // here rather than in a second sweep. Nothing is known about where it goes,
+    // so guessing that it stays put costs at most one re-entry.
+    if (w.fresh.length > 0 && roomToSpare()) return w.fresh.splice(0, 1)[0];
+    // Leave by the edge that earns the exit, so this state is finished behind us.
+    if (mover !== null) return queue.splice(mover, 1)[0];
+    return w.fresh.splice(0, 1)[0];
   }
 
   try {
@@ -187,9 +257,11 @@ export async function replay(
       if (actionsUsed >= config.maxActions) {
         limitHit = limitHit ?? `maxActions (${config.maxActions})`;
         for (const rest of work.values()) {
-          if (!hasWork(rest)) continue;
-          unwalked += rest.queue?.length ?? rest.node.interactiveCount;
+          if (rest.lost) continue;
+          unwalked +=
+            (rest.queue?.length ?? rest.node.interactiveCount) + rest.fresh.length;
           rest.queue = [];
+          rest.fresh = [];
         }
         break;
       }
@@ -197,7 +269,7 @@ export async function replay(
       // What is still owed on a state. Before its first visit that is every
       // control the baseline saw; after a partial one it is only what is left,
       // and charging the whole state again would count the walked half twice.
-      const owed = () => w.queue?.length ?? w.node.interactiveCount;
+      const owed = () => (w.queue?.length ?? w.node.interactiveCount) + w.fresh.length;
 
       if (!seated(w)) {
         reentries++;
@@ -236,7 +308,10 @@ export async function replay(
             });
             continue;
           }
-          w.queue.push(el);
+          // Split here rather than at pick time, so the two passes are a
+          // property of the work list and not of the order it is read in.
+          if (led.has(controlKey(w.node.id, el.role, el.name))) w.queue.push(el);
+          else w.fresh.push(el);
         }
         nodes[w.node.id] = {
           id: w.node.id,
@@ -247,8 +322,8 @@ export async function replay(
           interactiveCount: w.elements.length,
         };
         log(`state ${at!.fingerprint.route} (${w.elements.length} controls)`);
-        if (w.queue.length === 0) continue;
       }
+      if (!hasWork(w)) continue;
 
       const el = pickControl(w);
       const result = await attempt(page, config, el, w.elements, at!);

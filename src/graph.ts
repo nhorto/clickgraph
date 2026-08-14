@@ -79,8 +79,43 @@ function describe(edge: UIEdge, graph: UIGraph): string {
   return `${actionLabel(edge.action)} on ${nodeLabel(graph, edge.from)}`;
 }
 
+/**
+ * Was this screen worked to the end, or did the run stop partway through it?
+ *
+ * A control missing from a graph means one of two things that look identical
+ * from the outside: it was not there, or nothing ever got to it. Treating the
+ * second as the first is how a diff invents breakage. On a 2,086-control app
+ * walked under a 200-action budget, two runs sampled different tenths of the
+ * same screens and the difference came back as 87 controls "gone" and 10 born
+ * broken — on an app that had not changed at all.
+ *
+ * A control is accounted for if it was walked or skipped with a reason.
+ * Anything left over was never reached. Only consulted when a run actually hit
+ * a budget: without one every state is worked to exhaustion, so absence really
+ * does mean absence.
+ *
+ * Conservative in one known direction. With --fill-forms a form's fields are
+ * neither walked nor skipped — they go in as part of their submit — so a screen
+ * holding a form reads as unfinished. That errs toward calling a real change
+ * uncertain, which is the direction this project prefers to be wrong in.
+ */
+function partiallyWalked(graph: UIGraph): (nodeId: string) => boolean {
+  if (!graph.coverage.limitHit) return () => false;
+  const accounted = new Map<string, number>();
+  const bump = (id: string) => accounted.set(id, (accounted.get(id) ?? 0) + 1);
+  for (const edge of graph.edges) bump(edge.from);
+  for (const skip of graph.coverage.skipped) bump(skip.nodeId);
+  return (nodeId: string) => {
+    const node = graph.nodes[nodeId];
+    if (!node) return false;
+    return (accounted.get(nodeId) ?? 0) < node.interactiveCount;
+  };
+}
+
 export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
   const changes: Change[] = [];
+  const baselineStoppedShort = partiallyWalked(baseline);
+  const currentStoppedShort = partiallyWalked(current);
 
   // --- entry-page health ---
   // Errors that appear on load are a regression even if every control still
@@ -170,14 +205,27 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
       // The tracer-bullet case: a control that did not exist before and does
       // nothing now is the freshly built thing being broken on arrival. That is
       // the finding this tool exists to deliver, so it fails the run.
-      const bornBroken = isBroken(curr);
+      //
+      // Unless the baseline never finished this screen — then "new" is only
+      // "not in the baseline", which is a fact about the old run rather than
+      // about the app, and a dead control here may have been dead all along.
+      // Still reported, because it is still a dead control; not a regression,
+      // because nothing establishes that it changed.
+      const unproven = baselineStoppedShort(curr.from);
+      const bornBroken = isBroken(curr) && !unproven;
       changes.push({
         kind: 'new-edge',
         severity: bornBroken ? 'regression' : 'info',
         summary: bornBroken
           ? `new control does not work: ${describe(curr, current)} → ${curr.outcome.kind}`
-          : `new interaction: ${describe(curr, current)} → ${curr.outcome.kind}`,
-        detail: bornBroken ? curr.outcome.note : undefined,
+          : isBroken(curr)
+            ? `does not work, and the baseline never reached it: ${describe(curr, current)} → ${curr.outcome.kind}`
+            : `new interaction: ${describe(curr, current)} → ${curr.outcome.kind}`,
+        detail: bornBroken
+          ? curr.outcome.note
+          : isBroken(curr)
+            ? 'the baseline stopped before covering this screen, so there is nothing to say it ever worked — re-walk without a budget to judge it'
+            : undefined,
       });
       continue;
     }
@@ -222,10 +270,22 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
   // finding — it is a symptom of the broken path in. Reporting each one
   // separately buries the single root cause under its own fallout.
   const stranded = new Map<string, number>();
+  // Controls this run never got to, rolled up per screen. Reported as the
+  // coverage gap they are, rather than as one "control gone" apiece.
+  const unreached = new Map<string, number>();
   for (const [key, base] of baseEdges) {
     if (currEdges.has(key)) continue;
     if (missingStates.has(base.from)) {
       stranded.set(base.from, (stranded.get(base.from) ?? 0) + 1);
+      continue;
+    }
+    // The run stopped partway through this screen, so the control is missing
+    // from the report and not necessarily from the app. Calling that a
+    // regression is the single loudest way this tool can cry wolf: it fires
+    // once per unreached control, so a budget that stops halfway through a big
+    // screen produces a page of confident nonsense.
+    if (currentStoppedShort(base.from)) {
+      unreached.set(base.from, (unreached.get(base.from) ?? 0) + 1);
       continue;
     }
     changes.push({
@@ -233,6 +293,16 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
       severity: 'regression',
       summary: `control gone: ${describe(base, baseline)}`,
       detail: 'it was walked in the baseline and is not present now',
+    });
+  }
+  for (const [id, count] of unreached) {
+    changes.push({
+      kind: 'missing-edge',
+      severity: 'info',
+      summary: `${count} control(s) on ${nodeLabel(baseline, id)} were not reached this run`,
+      detail:
+        `the run stopped at ${current.coverage.limitHit} before covering this screen — ` +
+        'they are uncovered, not gone. Raise the budget to compare them',
     });
   }
   for (const [id, count] of stranded) {

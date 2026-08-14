@@ -19,8 +19,15 @@ interface Args {
   maxActions?: number;
   maxDepth?: number;
   settleMs?: number;
-  allowDangerous: boolean;
-  fillForms: boolean;
+  /**
+   * Left undefined rather than false when the flag is absent, so that "not
+   * asked for" stays distinguishable from "asked to be off". A replay inherits
+   * the baseline's switches, and a false here would overwrite them: replay a
+   * --fill-forms baseline without repeating the flag and every form submit in
+   * the app goes missing, which reads as controls disappearing.
+   */
+  allowDangerous?: boolean;
+  fillForms?: boolean;
   replay: boolean;
   storageState?: string;
 }
@@ -31,8 +38,6 @@ function parseArgs(argv: string[]): Args {
     out: DEFAULT_GRAPH_PATH,
     json: false,
     quiet: false,
-    allowDangerous: false,
-    fillForms: false,
     replay: false,
   };
   const rest = argv.slice(1);

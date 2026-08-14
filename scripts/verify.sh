@@ -274,6 +274,72 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the re-walk it asks for does reach the dead control"
 
+echo "H: a baseline that ran out of budget does not invent regressions"
+# Found by pointing this at a real app. 2,086 controls behind a 200-action
+# budget: the baseline walked one tenth of them, the replay walked a different
+# tenth, and the diff reported the gap between two samples as 87 controls gone
+# and 10 born broken. Nothing had changed. A control absent from a run means
+# either it is not there or nothing reached it, and only one of those is news.
+start_fixture PORT="$PORT"
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --max-actions 20 --json >/tmp/clickgraph-tight.json 2>/dev/null
+check "$?" "0" "a budget-limited baseline still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-tight.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (!v.coverage.limitHit) fail("the baseline was meant to hit a budget and did not");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the baseline records that it stopped early"
+
+# Same app, unchanged. Every difference here is an artifact of where each run
+# happened to stop, so none of it may be reported as breakage.
+node dist/cli.js diff "$URL" --replay --quiet --json >/tmp/clickgraph-tight-replay.json 2>/dev/null
+node -e '
+  const v = require("/tmp/clickgraph-tight-replay.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.regressions.length !== 0)
+    fail(`unchanged app, truncated baseline, ${v.regressions.length} regression(s): ` +
+      v.regressions.slice(0, 3).map((r) => r.summary).join(" | "));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "replaying a truncated baseline reports no regressions on an unchanged app"
+
+# The replay must still cover everything the baseline did, or "no regressions"
+# would just mean it compared nothing.
+node -e '
+  const v = require("/tmp/clickgraph-tight-replay.json");
+  const b = require("/tmp/clickgraph-tight.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.coverage.walked < b.coverage.walked)
+    fail(`replay walked ${v.coverage.walked}, baseline walked ${b.coverage.walked}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and still covers everything the truncated baseline did"
+
+# The gap is still reported — as coverage, which is what it is.
+start_fixture PORT="$PORT" BREAK=1
+node dist/cli.js diff "$URL" --replay --quiet --max-actions 12 >/tmp/clickgraph-tight-break.txt 2>&1
+grep -q 'not reached this run' /tmp/clickgraph-tight-break.txt
+check "$?" "0" "says which controls it never reached, instead of calling them gone"
+grep -q 'control gone' /tmp/clickgraph-tight-break.txt
+check "$?" "1" "and does not call an unreached control gone"
+
+# A replay inherits the switches its baseline was walked with. Without that, a
+# --fill-forms baseline replayed by the plain command loses every form submit in
+# the app, and controls that never moved get reported as gone. The flags default
+# to unset rather than false so that inheriting is possible at all.
+start_fixture PORT="$PORT"
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --fill-forms >/dev/null 2>&1
+check "$?" "0" "a --fill-forms baseline for the inheritance check"
+node dist/cli.js diff "$URL" --replay --quiet --json >/tmp/clickgraph-inherit.json 2>/dev/null
+node -e '
+  const v = require("/tmp/clickgraph-inherit.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const gone = v.regressions.filter((r) => /gone|does not work/.test(r.summary));
+  if (gone.length !== 0)
+    fail(`replay dropped the baselines switches: ${gone.map((r) => r.summary).join(" | ")}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a replay inherits --fill-forms instead of losing every form submit"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]

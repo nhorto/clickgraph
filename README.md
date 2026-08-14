@@ -66,6 +66,19 @@ only ever used to plan the route — what each control does *now* is measured
 after every action, so an app that has changed re-routes the plan and never
 skews the findings.
 
+How much that is worth depends on the app, and the fixture flatters it. Its
+eight screens are densely linked and three quarters of its controls navigate, so
+almost every exit is a free ride. App Atlas — 40 states, 2,086 controls, a React
+Flow SPA where most states share one URL — has far less for a router to exploit:
+
+| | Interactions | Reloads | Reloads per action |
+|---|---|---|---|
+| Full walk | 197 | 191 | 0.97 |
+| `--replay` | 271 | 169 | 0.62 |
+
+A third off per action rather than three quarters, on a run that covers more
+ground. Worth having, and not the fixture's number.
+
 It buys that by covering less, and says which less. A replay reads the live page
 at each state it visits, so a control added to a screen the baseline knew is
 still caught; a screen the baseline never knew is walked into, left unopened,
@@ -189,11 +202,11 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through seven scenarios — unchanged (twice, for
+Runs the fixture app through eight scenarios — unchanged (twice, for
 determinism), a broken interaction, a new feature with one dead control, the
 JSON verdict agreeing with the exit code, an app behind a login screen, a form
 that drops its submission beside one that works, and `--replay` finding all of
-the above while naming the screen it declined to open. 40 checks, all passing as
+the above while naming the screen it declined to open. 48 checks, all passing as
 of the last commit.
 
 ## Tested against real apps
@@ -220,6 +233,7 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **The tool has to be able to find its own controls again.** A third of the controls on a real dashboard could not be resolved by the selector recorded for them seconds earlier, on the same page, with nothing changed — because the name recorded here comes from the DOM and Playwright's comes from the accessible-name algorithm, and the two disagree over decorative content, CSS `text-transform` and `title` attributes. Chasing that algorithm is a losing game; every element now carries a verified structural path to fall back to. On that dashboard it took a walk from 60 interactions to 77, and from 220 seconds to 108.
 - **A control hidden from the accessibility tree is hidden from the walk.** An open dialog left the whole page behind it enumerated as clickable, so every one of those controls came back covered by the dialog's own backdrop. `aria-hidden` and `inert` are how an app says that; respecting them took the same dashboard from 24 states to 32.
 - **An empty form's submit button is not a dead control.** Clicking it fires native validation, which refuses the submission and changes no DOM — indistinguishable from a button wired to nothing. The browser's own `checkValidity` settles it, and the form is reported as skipped until something fills it in.
+- **A control a run never reached is not a control that is gone.** App Atlas has 2,086 controls and the default budget walks 200 of them. The baseline sampled one tenth; `--replay`, which reorders traversal by design, sampled a different tenth; and the diff reported the difference between two samples as 87 controls gone and 10 broken on arrival. The app had not changed. Absence from a graph means either "not there" or "never got to it", and a budget is exactly the condition that makes the second common — so where a run stopped short of a screen, the missing controls are now reported as the coverage gap they are. The measured scope, because the guess was wrong: two full walks over the same truncated app came back clean, 0 regressions, on the code that produced the 97. Deterministic traversal samples identically, so a plain `diff` does not trip this on its own — it took reordering to expose it. Whether a change that shifts where the budget falls could trip it too is untested, and the fix covers both because the reasoning does not depend on which run did the reordering.
 
 ## Layout
 

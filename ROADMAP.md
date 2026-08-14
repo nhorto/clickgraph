@@ -115,6 +115,52 @@ change the app deliberately, and a walk is what they are checking.)
       without it the fast path would have quietly bought its speed by going
       blind to exactly the screen an agent had just built.
 
+- [x] **Dogfooding the replay found something worth more than the replay.**
+      Pointed at App Atlas — 2,086 controls, a 200-action budget — and it
+      reported 97 regressions against an app that had not changed. The baseline
+      walked one tenth of the controls, the replay walked a different tenth, and
+      the diff called the difference between two samples 87 controls gone and 10
+      broken on arrival.
+
+      The trigger was mine: reordering traversal is exactly what replay does,
+      and under a budget the order decides which controls fall inside it. The
+      reading underneath it is older — a control absent from a graph means
+      either "not there" or "never reached", and the diff only ever read it the
+      first way.
+
+      How far that reaches was worth measuring rather than assuming, and the
+      guess was wrong. Two full walks over the same truncated app, on the same
+      code that produced the 97, came back clean. Deterministic traversal
+      samples identically, so plain `diff` does not trip this by itself; it
+      took reordering to expose it, and calling it a long-standing bug in
+      `diff` would have been a nicer story than the true one. Whether a change
+      that shifts where the budget falls could trip it as well is untested. The
+      fix sits in the diff regardless, because the reasoning never depended on
+      which run did the reordering.
+
+      Fixed in both places: a run that stopped short of a screen reports the
+      controls it did not reach as a coverage gap, and the replay's budget now
+      has the baseline's own edge count as its floor, so the comparison set is
+      whole before anything new is walked.
+
+      Getting the second half right took three tries, and the two failures are
+      the instructive part. Raising the floor did nothing at first — a
+      `...overrides` spread carried `maxActions: undefined` over the top of it,
+      and the only reason regressions had gone to zero was the diff fix
+      relabelling the same 87 controls as coverage. Then holding new controls
+      back to a second pass did fix coverage, and cost 212 reloads against the
+      full walk's 191: a second traversal has no route left to plan, so the
+      feature's whole justification went with it. What works is reserving the
+      budget rather than reordering the work — new controls get walked while the
+      browser is already in the state, but only while what remains still covers
+      every baseline edge outstanding.
+
+      The honest number, now that it covers everything: 191 reloads over 197
+      interactions for the walk, 169 over 271 for the replay. A third off per
+      action, not the fixture's three quarters. The fixture's eight densely
+      linked screens make almost every exit a free ride; a 40-state SPA where
+      the states share a URL gives a router much less to work with.
+
 - [ ] What is left of the reloads: 12 on the fixture, one per time the route
       strands itself in a finished state. Ordering states by what links them,
       rather than by path length, is the next cut. Walking several states at
