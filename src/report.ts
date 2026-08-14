@@ -138,6 +138,17 @@ export function reportWalk(graph: UIGraph): string {
   if (coverage.limitHit) {
     lines.push(c.yellow(`  walk stopped early at budget: ${coverage.limitHit}`));
   }
+  if (coverage.mode === 'replay') {
+    lines.push(
+      c.dim('  This was a replay: it visited the states the baseline knew, and did not'),
+    );
+    lines.push(c.dim('  explore for new ones.'));
+    if ((coverage.statesUnexplored ?? 0) > 0) {
+      lines.push(
+        c.yellow(`  ${coverage.statesUnexplored} new screen(s) were reached and left unopened`),
+      );
+    }
+  }
   lines.push(
     c.dim('  Coverage is heuristic, never exhaustive. Unwalked is not the same as working.'),
   );
@@ -146,17 +157,37 @@ export function reportWalk(graph: UIGraph): string {
   return lines.join('\n');
 }
 
-export function reportDiff(diff: GraphDiff): string {
+export function reportDiff(diff: GraphDiff, current?: UIGraph): string {
   const lines: string[] = [];
   const regressions = diff.changes.filter((ch) => ch.severity === 'regression');
   const progressions = diff.changes.filter((ch) => ch.severity === 'progression');
   const info = diff.changes.filter((ch) => ch.severity === 'info');
+  const coverage = current?.coverage;
 
   lines.push('');
   lines.push(c.bold('Graph diff'));
   lines.push(c.dim(`  baseline ${diff.baselineWalkedAt}`));
   lines.push(c.dim(`  current  ${diff.currentWalkedAt}`));
+  if (coverage?.mode === 'replay') {
+    lines.push(
+      c.dim(`  replayed ${coverage.edgesWalked} interaction(s) over the baseline's states`),
+    );
+  }
   lines.push('');
+
+  // Said before the verdict, not after it. A replay that walked into a screen
+  // its baseline never knew has not checked that screen, and "no change" read
+  // on its own would be taken to mean it had.
+  if ((coverage?.statesUnexplored ?? 0) > 0) {
+    lines.push(
+      c.yellow(
+        `  ${coverage!.statesUnexplored} new screen(s) were reached and not explored — ` +
+          'a replay stops at the edge of its baseline.',
+      ),
+    );
+    lines.push(c.dim('  Re-walk to cover them: clickgraph walk <url>'));
+    lines.push('');
+  }
 
   if (diff.changes.length === 0) {
     lines.push(c.green('  No change. Every walked interaction behaves as it did in the baseline.'));

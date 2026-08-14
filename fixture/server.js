@@ -23,12 +23,20 @@
  * Run with AUTH=1 to put the whole app behind a login screen, so the walker can
  * be checked against the case it used to get wrong: without a session it walks
  * the login form and reports a clean run of a page nobody cares about.
+ *
+ * Run with ROUTE=1 to add a whole new screen, reached by a new link on /orders,
+ * with a dead button on it. This is the case that separates a walk from a
+ * replay: a walk discovers the screen and finds the dead button, while a replay
+ * only knows the states its baseline knew. What a replay must not do is come
+ * back clean — reaching a screen and not opening it has to be reported, or the
+ * faster mode quietly buys its speed with silence.
  */
 import { createServer } from 'node:http';
 
 const PORT = Number(process.env.PORT ?? 4173);
 const BREAK = process.env.BREAK === '1';
 const AUTH = process.env.AUTH === '1';
+const ROUTE = process.env.ROUTE === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -91,6 +99,7 @@ const routes = {
     </label>
     <button id="export" data-testid="export">Export</button>
     <button id="refresh" data-testid="refresh">Refresh</button>
+    ${ROUTE ? `<p><a href="/reports" data-testid="reports-link">Reports</a></p>` : ''}
     ${process.env.FEATURE === '1' ? `
     <button id="print" data-testid="print">Print invoice</button>
     <button id="archive" data-testid="archive">Archive</button>` : ''}
@@ -114,6 +123,14 @@ const routes = {
         document.getElementById('status').textContent = 'Refreshed';
       });`}
     </script>`),
+
+  // Only linked when ROUTE=1. The button on it is wired to nothing, so a run
+  // that opens this screen has a finding to report and a run that merely
+  // arrives at it has none — which is the whole difference being tested.
+  '/reports': page('Reports', `
+    <h1>Reports</h1>
+    <button id="run-report" data-testid="run-report">Run report</button>
+    <p><a href="/orders">Back to orders</a></p>`),
 
   '/orders/1042': page('Order #1042', `
     <h1>Order #1042</h1>

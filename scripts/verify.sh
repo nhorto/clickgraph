@@ -8,6 +8,7 @@
 #   D  --json says the same thing the report and the exit code say
 #   E  an app behind a login screen is not reported as a clean run
 #   F  a form is only judged once it has been filled in
+#   G  --replay finds what a full diff finds, and says what it did not open
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -17,7 +18,12 @@ PORT=${PORT:-4173}
 URL="http://localhost:$PORT"
 pass=0; fail=0
 
-cleanup() { pkill -f "node fixture/server.js" 2>/dev/null; }
+# The bracket is not cosmetic. `pkill -f` matches whole command lines, so the
+# bare pattern also matches any shell whose own command line happens to contain
+# it — including the one that invoked this script. Two runs died that way,
+# looking exactly like test failures. `[n]ode` matches the real server and can
+# never match a command line quoting the pattern itself.
+cleanup() { pkill -f "[n]ode fixture/server.js" 2>/dev/null; }
 trap cleanup EXIT
 
 start_fixture() {
@@ -197,6 +203,76 @@ node -e '
     fail(`a value was typed that is not obviously synthetic: ${JSON.stringify(typed)}`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "catches the form that drops its submission, clears the one that works"
+
+echo "G: replay finds what a full diff finds, and admits what it did not open"
+# The bargain --replay makes: it re-checks the states the baseline already knew,
+# which is most of the value at a fraction of the reloads, and it never goes
+# looking for new ones. That is only acceptable while the second half is said
+# out loud, so both halves are checked here.
+start_fixture PORT="$PORT"
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet >/dev/null 2>&1
+check "$?" "0" "baseline for the replay scenarios"
+
+node dist/cli.js diff "$URL" --replay --quiet --json >/tmp/clickgraph-replay-same.json 2>/dev/null
+check "$?" "0" "a replay of an unchanged app reports no change"
+node -e '
+  const v = require("/tmp/clickgraph-replay-same.json");
+  const g = require("./.uigraph/graph.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.coverage.mode !== "replay") fail("the run did not record itself as a replay");
+  if (v.coverage.statesUnexplored !== 0) fail("nothing was new, so nothing should be unexplored");
+  // The point of replaying rather than walking is to cover the same ground, so
+  // a replay that quietly checks less would pass every test above this one.
+  if (v.coverage.walked < g.coverage.edgesWalked)
+    fail(`replay covered ${v.coverage.walked}, the baseline walked ${g.coverage.edgesWalked}`);
+  if (v.coverage.states !== g.coverage.statesFound)
+    fail(`replay reached ${v.coverage.states} of ${g.coverage.statesFound} states`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "replay covers the same states and interactions the walk did"
+
+start_fixture PORT="$PORT" BREAK=1
+node dist/cli.js diff "$URL" --replay --quiet >/tmp/clickgraph-replay-break.txt 2>&1
+check "$?" "1" "a replay of a broken app exits 1"
+grep -q 'Order #1042" on /orders was navigated, now no-effect' /tmp/clickgraph-replay-break.txt
+check "$?" "0" "replay catches the link that stopped navigating"
+grep -qE 'Refresh" on /orders was (network-only|state-changed), now no-effect' /tmp/clickgraph-replay-break.txt
+check "$?" "0" "replay catches the button that lost its handler"
+
+start_fixture PORT="$PORT" FEATURE=1
+node dist/cli.js diff "$URL" --replay --quiet >/tmp/clickgraph-replay-feat.txt 2>&1
+check "$?" "1" "a replay exits 1 on a dead new control"
+# A control added to a state the baseline already knew is still walked: replay
+# reads the live page, never the baseline's list of controls. Losing this would
+# make the fast path blind to exactly the thing the tool is for.
+grep -q 'new control does not work: button "Archive"' /tmp/clickgraph-replay-feat.txt
+check "$?" "0" "replay catches a dead control added to a known state"
+grep -qE 'new interaction: button "Print invoice".*(network-only|state-changed)' /tmp/clickgraph-replay-feat.txt
+check "$?" "0" "replay does not flag the working new button"
+
+start_fixture PORT="$PORT" ROUTE=1
+node dist/cli.js diff "$URL" --replay --quiet --json >/tmp/clickgraph-replay-route.json 2>/dev/null
+check "$?" "1" "a replay that left a screen unopened does not exit 0"
+node -e '
+  const v = require("/tmp/clickgraph-replay-route.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.coverage.statesUnexplored !== 1) fail(`want 1 unexplored screen, got ${v.coverage.statesUnexplored}`);
+  if (v.regressions.length !== 0) fail("an unopened screen is not a regression, and must not be dressed as one");
+  if (v.ok !== false) fail("ok must be false while a reached screen sits unopened");
+  if (!/not explored/.test(v.verdict)) fail(`the verdict hides the gap: ${v.verdict}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "says which screens it reached and declined to open"
+
+# And the walk it tells you to run does find what the replay could not.
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-route.json \
+  >/tmp/clickgraph-route-out.json 2>/dev/null
+node -e '
+  const v = require("/tmp/clickgraph-route-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (!v.findings.some((f) => /Run report/.test(f.control)))
+    fail("the walk did not find the dead button on the new screen");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the re-walk it asks for does reach the dead control"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

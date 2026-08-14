@@ -47,7 +47,37 @@ Other changes (2)
   • new interaction: button "Print invoice" on /orders → network-only
 ```
 
-Exit codes: `0` no regressions, `1` regressions found, `2` usage/runtime error — so an agent or CI can gate on it.
+Exit codes: `0` no regressions, `1` regressions found or the run proved nothing, `2` usage/runtime error — so an agent or CI can gate on it.
+
+### The fast check
+
+A plain `diff` explores from scratch, which means reloading the page before
+nearly every click: on the fixture, 52 re-entries costing 43 of a 72-second run.
+`--replay` uses the baseline as a map instead. The baseline records where each
+control led, so a control that navigates is a free ride into the next state that
+still has work rather than another reload.
+
+```bash
+node dist/cli.js diff http://localhost:4173 --replay
+```
+
+Same 59 interactions, 12 reloads instead of 52, 42s instead of 71s. The map is
+only ever used to plan the route — what each control does *now* is measured
+after every action, so an app that has changed re-routes the plan and never
+skews the findings.
+
+It buys that by covering less, and says which less. A replay reads the live page
+at each state it visits, so a control added to a screen the baseline knew is
+still caught; a screen the baseline never knew is walked into, left unopened,
+and reported:
+
+```
+  1 new screen(s) were reached and not explored — a replay stops at the edge of its baseline.
+  Re-walk to cover them: clickgraph walk <url>
+```
+
+That run exits 1 with no regressions. Not a failure — a refusal to call a run
+clean when the screen you just built is the one it declined to open.
 
 ### What an agent reads
 
@@ -159,10 +189,11 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through six scenarios — unchanged (twice, for
+Runs the fixture app through seven scenarios — unchanged (twice, for
 determinism), a broken interaction, a new feature with one dead control, the
-JSON verdict agreeing with the exit code, an app behind a login screen, and a
-form that drops its submission beside one that works. 28 checks, all passing as
+JSON verdict agreeing with the exit code, an app behind a login screen, a form
+that drops its submission beside one that works, and `--replay` finding all of
+the above while naming the screen it declined to open. 40 checks, all passing as
 of the last commit.
 
 ## Tested against real apps
@@ -194,7 +225,9 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 
 | Path | What |
 |---|---|
-| `src/walker.ts` | breadth-first exploration, budgets, safety rules |
+| `src/act.ts` | exercising one control: safety refusals, selects, forms, hover retry — the rules a walk and a replay must share |
+| `src/walker.ts` | breadth-first exploration and budgets |
+| `src/replay.ts` | re-checking a known graph, routed to avoid reloads |
 | `src/observer.ts` | in-page control extraction, selector derivation, outcome classification |
 | `src/fingerprint.ts` | two-tier state identity |
 | `src/graph.ts` | save/load and the graph diff |
@@ -203,7 +236,8 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 
 ## Next
 
-See [ROADMAP.md](ROADMAP.md). The short version: make the inner loop faster —
-a walk costs about 2.9s per action on a real app and almost all of it is the app
-reloading — then the App Atlas pairing and a graph viewer. The LLM healer comes
-last, on purpose: the deterministic core has to earn trust first.
+See [ROADMAP.md](ROADMAP.md). The short version: the inner loop is now roughly
+twice as fast via `--replay`, and what is left of the reloads is the next thing
+to cut. Then field clusters outside a `<form>`, the App Atlas pairing, and a
+graph viewer. The LLM healer comes last, on purpose: the deterministic core has
+to earn trust first.

@@ -89,16 +89,37 @@ biggest remaining term.
 It is this project's own bottleneck too. Adding two routes to the fixture took
 one walk from 31 to 49 seconds and `verify.sh` to eight minutes — the suite is
 ten walks, and it is the thing standing between an idea and knowing whether the
-idea worked.
+idea worked. (The suite is not the thing `--replay` fixes: most of its scenarios
+change the app deliberately, and a walk is what they are checking.)
 
-- [ ] Per-edge replay scripts: `diff` currently re-explores everything.
-      Replaying the baseline's known edges deterministically is the cheap
-      inner loop; exploration becomes occasional, replay runs on every change.
-- [ ] Cut the number of reloads, which is where the time actually goes.
-      Ordering the frontier so consecutive actions share a source state, or
-      walking several states at once in separate browser contexts. Reaching a
-      state by clicking through the running app, rather than reloading into it,
-      is the version of this that would help a single-page app.
+- [x] **Per-edge replay, and the reload cut, turned out to be one item.**
+      Replay was planned as the cheap inner loop, and measuring it first showed
+      why it could not be: replaying the same edges pays the same reloads, so
+      on its own it saves nothing. What it changes is what is *knowable*. On the
+      fixture, 52 re-entries cost 43 of a 72-second walk — 60% of the time spent
+      returning to a screen the browser had just been on — and a walk cannot
+      avoid them, because it does not learn where a control goes until after it
+      has clicked it and lost its place. A baseline already knows. So the
+      replay is routed: do everything in a state that leaves the page where it
+      is, then leave by an edge that lands somewhere with work still waiting,
+      which turns the exit into the next arrival. 52 reloads became 12, and 71
+      seconds became 42, over the identical 59 interactions.
+
+      Two things this had to not break. The baseline orders the route and
+      nothing else — where each control leads *now* is still measured after
+      every action, so a changed app re-plans rather than mis-reports. And a
+      replay covers less than a walk, which only stays acceptable while it is
+      said: a screen the baseline never knew is walked into, left unopened, and
+      reported, and that run exits 1 with no regressions rather than claiming a
+      pass. Writing that case into the fixture was worth more than the speed —
+      without it the fast path would have quietly bought its speed by going
+      blind to exactly the screen an agent had just built.
+
+- [ ] What is left of the reloads: 12 on the fixture, one per time the route
+      strands itself in a finished state. Ordering states by what links them,
+      rather than by path length, is the next cut. Walking several states at
+      once in separate browser contexts is the other, and replay is what makes
+      it possible — the work list is known up front, so it shards.
 - [x] **Measured and rejected: entering a state by navigating straight to its
       URL.** The intuition was that replaying a path costs a reload plus every
       click on the way in. Interleaved A/B on a real dashboard: 175.5s replay

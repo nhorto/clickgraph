@@ -44,12 +44,49 @@ npx clickgraph diff http://localhost:5173 --json
 `walk` writes `.uigraph/graph.json`. Commit that file — it is the baseline the
 diff compares against, and it reviews like any other file in a pull request.
 
-Exit codes: `0` healthy · `1` regressions found, or the app was unhealthy on
-load · `2` usage or runtime error.
+Exit codes: `0` healthy · `1` regressions found, or the run proved nothing ·
+`2` usage or runtime error.
 
 Useful flags: `--max-actions <n>` and `--max-depth <n>` to bound a big app,
 `--settle <ms>` to raise the DOM-quiet period if working controls look dead in
 an app that updates late.
+
+## The fast check: `--replay`
+
+A plain `diff` explores the app from scratch every time, which means reloading
+the page before nearly every click. `--replay` uses the baseline's map instead —
+it knows where each control led, so a control that navigates carries it into the
+next screen rather than costing another reload. Same interactions, roughly half
+the time.
+
+```bash
+npx clickgraph diff http://localhost:5173 --replay --json
+```
+
+Use it as the ordinary check while you work. It reads the live page at every
+state it visits, so **a control you just added to an existing screen is still
+tested** — that is the common case and replay covers it fully.
+
+What it does not do is go looking for screens the baseline never knew. If your
+change added a whole new route or a new modal, replay will walk into it, decline
+to open it, and tell you so:
+
+```json
+{ "ok": false, "regressions": [],
+  "verdict": "no regressions; 3 non-breaking change(s) — but 1 new screen(s) were reached and not explored; replay stops at the edge of its baseline, so re-walk to cover them",
+  "coverage": { "mode": "replay", "statesUnexplored": 1 } }
+```
+
+`ok` is false there with zero regressions on purpose. It is not a failure —
+it means the run could not answer the question. Re-walk to take in the new
+screen and refresh the baseline:
+
+```bash
+npx clickgraph walk http://localhost:5173 --json
+```
+
+Then keep replaying. Do not report a replay with `statesUnexplored > 0` as a
+pass; the screen you just built is the one it did not open.
 
 ## Apps behind a login
 
@@ -137,6 +174,12 @@ verdict string says so; do not translate it into "no issues found".
 controls nobody proved anything about. Never describe a run as verifying the
 whole UI. If coverage matters to the claim you are about to make, state the
 numbers.
+
+**A replay is bounded by its baseline.** `coverage.mode` tells you which kind of
+run produced the answer. A clean `replay` means the states the baseline knew
+still behave; it says nothing about a screen added since, and
+`coverage.statesUnexplored` counts the ones it reached and left shut. Re-walk
+before claiming the change is verified.
 
 Each skip carries `examples` explaining what the reason meant, and they are
 worth reading rather than counting. `unreachable` in particular covers two very

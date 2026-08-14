@@ -32,6 +32,19 @@ export interface VerdictCoverage {
    */
   skipped: { reason: string; count: number; examples: string[] }[];
   limitHit: string | null;
+  /**
+   * Whether the run explored or replayed a known graph. An agent deciding
+   * whether to trust a clean result needs this: a replay only ever visits the
+   * states its baseline already knew.
+   */
+  mode: 'walk' | 'replay';
+  /**
+   * Screens a replay reached and did not open. Anything behind one of these is
+   * untested — this is the number that says a clean replay is not a clean app.
+   */
+  statesUnexplored: number;
+  /** Reloads spent returning to a state already visited. Where the time goes. */
+  reentries: number;
   /** Coverage is heuristic. Restated here so a JSON consumer cannot miss it. */
   note: string;
 }
@@ -90,6 +103,9 @@ function coverageOf(graph: UIGraph): VerdictCoverage {
       examples: [...examples].slice(0, 2),
     })),
     limitHit: graph.coverage.limitHit,
+    mode: graph.coverage.mode ?? 'walk',
+    statesUnexplored: graph.coverage.statesUnexplored ?? 0,
+    reentries: graph.coverage.reentries ?? 0,
     note: COVERAGE_NOTE,
   };
 }
@@ -186,13 +202,29 @@ export function diffVerdict(diff: GraphDiff, current: UIGraph): DiffVerdict {
     verdict = `no regressions; ${diff.changes.length} non-breaking change(s)`;
   }
 
+  // A replay is bounded by the baseline it replays, and a clean one says
+  // nothing about a screen that baseline never knew. Appended to the verdict
+  // rather than left in the coverage block, because the verdict sentence is
+  // what an agent reads when it reads only one thing.
+  const unexplored = current.coverage.statesUnexplored ?? 0;
+  if (unexplored > 0) {
+    verdict +=
+      ` — but ${unexplored} new screen(s) were reached and not explored; ` +
+      'replay stops at the edge of its baseline, so re-walk to cover them';
+  }
+
   return {
     tool: 'clickgraph',
     command: 'diff',
     url: current.baseUrl,
     baselineWalkedAt: diff.baselineWalkedAt,
     currentWalkedAt: diff.currentWalkedAt,
-    ok: regressions.length === 0,
+    // An unexplored screen is not a regression, and it is not a pass either.
+    // Exiting 0 here is the failure mode that matters most: an agent adds a
+    // feature on a new page, replays, is told nothing is broken, and the dead
+    // button it just shipped is on the one screen the run declined to open.
+    // A walk already exits 1 when it proves nothing; this is the same case.
+    ok: regressions.length === 0 && unexplored === 0,
     verdict,
     regressions: regressions.map((ch) => ({
       kind: ch.kind,

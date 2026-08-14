@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { walk } from './walker.js';
+import { replay } from './replay.js';
 import { DEFAULT_GRAPH_PATH, diffGraphs, loadGraph, saveGraph } from './graph.js';
 import { reportDiff, reportWalk } from './report.js';
 import { diffVerdict, walkVerdict } from './verdict.js';
@@ -20,6 +21,7 @@ interface Args {
   settleMs?: number;
   allowDangerous: boolean;
   fillForms: boolean;
+  replay: boolean;
   storageState?: string;
 }
 
@@ -31,6 +33,7 @@ function parseArgs(argv: string[]): Args {
     quiet: false,
     allowDangerous: false,
     fillForms: false,
+    replay: false,
   };
   const rest = argv.slice(1);
   for (let i = 0; i < rest.length; i++) {
@@ -39,6 +42,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--quiet') args.quiet = true;
     else if (arg === '--allow-dangerous') args.allowDangerous = true;
     else if (arg === '--fill-forms') args.fillForms = true;
+    else if (arg === '--replay') args.replay = true;
     else if (arg === '--out' || arg === '--baseline') args.out = rest[++i];
     else if (arg === '--max-states') args.maxStates = Number(rest[++i]);
     else if (arg === '--max-actions') args.maxActions = Number(rest[++i]);
@@ -71,6 +75,13 @@ Options
   --storage-state <p>   session file to walk signed in, or where login should
                         save one (default ${DEFAULT_SESSION_PATH}). It holds
                         live cookies — keep it out of git
+  --replay              (diff only) re-check the baseline's own states instead
+                        of exploring again. Much faster, because the baseline
+                        records where each control led and a control that
+                        navigates becomes a free ride into the next state
+                        rather than another reload. It covers less: a screen
+                        the baseline never knew is reported as reached and
+                        unexplored, never as clean. Re-walk to widen the map
   --allow-dangerous     also click delete / logout / pay controls (off by default)
   --fill-forms          fill each form with obviously synthetic values and
                         submit it. Off by default: a form that submits
@@ -82,9 +93,10 @@ Options
   --quiet               suppress progress lines
 
 Exit codes
-  0  healthy: no regressions, and the app loaded cleanly
-  1  regressions found (diff), or the app errored on load / offered
-     nothing to walk (walk)
+  0  healthy: no regressions, and the run covered what it set out to
+  1  regressions found (diff), or the run proved nothing: the app errored
+     on load or offered nothing to walk (walk), or a --replay reached a
+     screen its baseline never knew and did not open it (diff)
   2  usage or runtime error
 `;
 
@@ -112,6 +124,15 @@ async function main(): Promise<number> {
       console.error('error: walk needs a url\n' + HELP);
       return 2;
     }
+    // Silently ignoring it would hand back a slow walk to someone who asked for
+    // the fast check and would have no way to tell they had not got it.
+    if (args.replay) {
+      console.error(
+        "error: --replay re-checks an existing baseline, so it belongs to diff — " +
+          'run `clickgraph diff <url> --replay`',
+      );
+      return 2;
+    }
     const graph = await walk(args.url, walkOptions);
     saveGraph(graph, args.out);
     // A baseline taken from an app that errors on load, or that offered nothing
@@ -136,11 +157,17 @@ async function main(): Promise<number> {
       console.error(`error: no baseline at ${args.out} — run 'clickgraph walk <url>' first`);
       return 2;
     }
-    const current = await walk(args.url, walkOptions);
+    // Replay follows the baseline's own map, which is both what makes it fast
+    // and what bounds it: it re-checks the states that baseline knew and does
+    // not go looking for new ones. Explicitly asked for, never assumed, because
+    // the difference is in what the run does not cover.
+    const current = args.replay
+      ? await replay(args.url, baseline, walkOptions)
+      : await walk(args.url, walkOptions);
     const diff = diffGraphs(baseline, current);
     const verdict = diffVerdict(diff, current);
     if (args.json) console.log(JSON.stringify(verdict, null, 2));
-    else console.log(reportDiff(diff));
+    else console.log(reportDiff(diff, current));
     return verdict.ok ? 0 : 1;
   }
 

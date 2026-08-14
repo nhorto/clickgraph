@@ -161,6 +161,29 @@ export interface Coverage {
   skipped: SkippedElement[];
   /** Which budget stopped the walk, if any. null means the walk ran to completion. */
   limitHit: string | null;
+  /**
+   * How the run chose where to go. A replay visits the states a baseline
+   * already knew and stops there; it never explores past them. Recorded
+   * because the difference is invisible in the findings — a replay of a stale
+   * baseline reports a clean run over an app it only partly saw, and nothing
+   * else in this file would say so.
+   */
+  mode?: 'walk' | 'replay';
+  /**
+   * States a replay reached but did not explore, because they were not in the
+   * baseline. Each one is a screen whose controls nothing has tried.
+   */
+  statesUnexplored?: number;
+  /**
+   * Times the run reloaded the app and clicked its way back to a state it had
+   * already been in.
+   *
+   * This is where a run's time goes — 52 of them cost 43 of a 72-second walk on
+   * the fixture — and it was measured with throwaway instrumentation before it
+   * lived here. Recording it makes a speed claim checkable from the artifact
+   * instead of from a patch someone has to write again.
+   */
+  reentries?: number;
 }
 
 export interface WalkConfig {

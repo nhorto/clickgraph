@@ -16,13 +16,22 @@ export function loadGraph(path: string): UIGraph | null {
 }
 
 /**
- * Key an edge by its source state plus the control's role and name rather than
- * by selector. Selector strategy can change between runs for reasons that have
+ * Identify a control by its source state plus its role and name, rather than by
+ * selector. Selector strategy can change between runs for reasons that have
  * nothing to do with behavior; role+name is stable within a given state, and if
  * the name itself changes the source node's fingerprint changes with it.
+ *
+ * Shared with the replay, which has to recognize a control on the live page as
+ * the one a baseline edge describes. Both sides matching on the same key is
+ * what keeps "this control changed" and "this control is new" from disagreeing.
  */
+export function controlKey(nodeId: string, role: string, name: string): string {
+  return `${nodeId}::${role}|${normalizeText(name)}`;
+}
+
+/** The same key, read off an edge that has already been walked. */
 function edgeKey(edge: UIEdge): string {
-  return `${edge.from}::${edge.action.role}|${normalizeText(edge.action.name)}`;
+  return controlKey(edge.from, edge.action.role, edge.action.name);
 }
 
 const WORKING: OutcomeKind[] = ['navigated', 'state-changed', 'network-only'];

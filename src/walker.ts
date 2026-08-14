@@ -45,6 +45,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   let unwalked = 0;
   let limitHit: string | null = null;
   let actionsUsed = 0;
+  let reentries = 0;
 
   const session = await openSession(baseUrl, config);
   const { page } = session;
@@ -121,6 +122,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // reusing a page that merely *looks* like the source state would attribute
         // the next edge to the wrong place.
         if (!atSnapshot || atSnapshot.fingerprint.structure !== state.fingerprint.structure) {
+          reentries++;
           if (!(await session.gotoPath(path))) {
             unwalked++;
             atSnapshot = null;
@@ -201,6 +203,8 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       edgesUnwalked: unwalked,
       skipped,
       limitHit,
+      mode: 'walk',
+      reentries,
     },
   };
 }
