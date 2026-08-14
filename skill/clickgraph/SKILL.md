@@ -138,6 +138,13 @@ controls nobody proved anything about. Never describe a run as verifying the
 whole UI. If coverage matters to the claim you are about to make, state the
 numbers.
 
+Each skip carries `examples` explaining what the reason meant, and they are
+worth reading rather than counting. `unreachable` in particular covers two very
+different things: controls in a panel or drawer the walk never opened, which is
+an ordinary coverage gap, and controls covered by something else on the page,
+which can mean a dialog was left open — if a whole screen's worth of controls
+comes back that way, say so rather than treating the run as complete.
+
 **A finding is a lead, not a verdict.** Before reporting a broken control, open
 the code for it and confirm. Real causes seen in practice: the control genuinely
 answers to hover rather than click; it is a link to the page you are already on;
