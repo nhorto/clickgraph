@@ -95,8 +95,33 @@ const routes = {
     <button id="print" data-testid="print">Print invoice</button>
     <button id="archive" data-testid="archive">Archive</button>` : ''}
     <p id="status"></p>
+    <!--
+      A control that works and whose only effect is visual: it scales a
+      container and changes not one character of text, exactly like the zoom on
+      a diagram. Before the visual signal existed this was indistinguishable
+      from "Export" — a button wired to nothing — and every canvas zoom, pan and
+      theme toggle on the web read as a dead control (issue #1).
+
+      The chart is deliberately outside the transformed element's own subtree in
+      spirit: what moves is the container, not the button that moves it. That is
+      what defeated the first attempt at the fix, which sampled the geometry of
+      the interactive controls and so measured only things that stay still.
+    -->
+    <div id="chart-frame" style="overflow:hidden;width:200px;height:60px">
+      <div id="chart" style="transform: scale(1); width:200px; height:60px; background:#ddd">
+        <span>orders chart</span>
+      </div>
+    </div>
+    <button id="zoom-in" data-testid="zoom-in" aria-label="Zoom In">Zoom In</button>
     <script>
       // "Export" is intentionally wired to nothing at all.
+      // "Zoom In" works, and proves the opposite case: a real effect that no
+      // amount of reading the text or the control list can see.
+      let chartScale = 1;
+      document.getElementById('zoom-in').addEventListener('click', () => {
+        chartScale = Math.round((chartScale + 0.2) * 10) / 10;
+        document.getElementById('chart').style.transform = 'scale(' + chartScale + ')';
+      });
       // The status filter works; the region filter is a planted defect — a
       // select that renders its options and does nothing with the choice.
       document.getElementById('status-filter').addEventListener('change', (e) => {

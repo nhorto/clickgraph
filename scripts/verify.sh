@@ -45,6 +45,11 @@ check "$?" "0" "finds the select whose choice is ignored"
 # anything, so before it was given a value this one looked exactly as dead.
 grep -q '"Filter orders by status"' /tmp/clickgraph-base.txt
 check "$?" "1" "does not flag the select that works"
+# A control whose only effect is visual must not read as a dead one. This is the
+# whole of issue #1: zoom moved a transform, changed no text and no control, and
+# came back indistinguishable from the unwired Export button beside it.
+grep -q '"Zoom In"' /tmp/clickgraph-base.txt
+check "$?" "1" "does not flag the control whose only effect is visual"
 grep -q '1 skipped (dangerous)' /tmp/clickgraph-base.txt; check "$?" "0" "refuses to click Delete account"
 grep -q '1 skipped (external)' /tmp/clickgraph-base.txt; check "$?" "0" "skips the off-origin link"
 

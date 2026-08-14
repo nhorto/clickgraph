@@ -12,6 +12,14 @@ export interface PageSnapshot {
   fingerprint: ReturnType<typeof computeFingerprint>;
   /** Hash of visible text. Only ever used to detect whether an action did anything. */
   contentHash: string;
+  /**
+   * Hash of geometry and colour. Also only ever used to detect whether an action
+   * did anything — never part of state identity, which stays coarse on purpose.
+   *
+   * Without it a purely visual control — zoom, pan, a theme toggle — is
+   * indistinguishable from one wired to nothing (issue #1).
+   */
+  visualHash: string;
 }
 
 /**
@@ -254,7 +262,56 @@ function extractPageData() {
   // something, and calling that control dead is the costlier mistake.
   const text = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
 
-  return { title: document.title, headings, elements, text };
+  // Geometry and colour, for the effects the two signals above cannot see.
+  //
+  // Everything else captured here is structural or textual, so a control whose
+  // whole job is visual came back indistinguishable from one wired to nothing:
+  // a diagram's Zoom In moved the viewport transform from scale(0.34) to
+  // scale(0.408) and changed not one character of innerText (issue #1). A
+  // light/dark toggle is the same shape and much more common.
+  //
+  // Rounded to 2px on purpose. The point is to catch a zoom, a pan, a collapse
+  // — changes of tens or hundreds of pixels — while staying deaf to sub-pixel
+  // reflow and to the tail of an animation that has not quite stopped. Being
+  // too sensitive here is the more expensive mistake in both directions: it
+  // reports dead controls as working, which does not merely add noise, it
+  // deletes the findings this tool exists to produce.
+  //
+  // Colour is read off `body` only, not per element. A theme switch changes it
+  // there whether it works by swapping a class or by moving a CSS variable on
+  // :root, and one read cannot drift the way a sampled set can.
+  const round = (n: number) => Math.round(n / 2) * 2;
+  const bodyStyle = window.getComputedStyle(document.body);
+
+  // Transforms are read separately from the controls' own geometry, and the
+  // first version of this was wrong for want of that distinction. It sampled
+  // only the interactive elements — but a diagram zooms by transforming the
+  // container its nodes live in, while the Zoom In button sits in a panel
+  // outside that container and does not move a pixel. The measurement covered
+  // exactly the geometry that stays still, and changed nothing at all.
+  //
+  // A transform is how the whole web moves things without touching layout:
+  // canvas zoom and pan, drawers, carousels, drag. Reading them wherever they
+  // are declared catches the family, not one library's spelling of it.
+  const transforms = Array.from(document.querySelectorAll('[style*="transform"]'))
+    .map((el: any) => el.style.transform)
+    .filter(Boolean);
+
+  const visual = [
+    document.documentElement.className,
+    document.body.className,
+    bodyStyle.backgroundColor,
+    bodyStyle.color,
+    ...transforms,
+    ...Array.from(document.querySelectorAll(INTERACTIVE))
+      .filter(isVisible)
+      .map((el: any) => {
+        const r = el.getBoundingClientRect();
+        return `${round(r.x)},${round(r.y)},${round(r.width)},${round(r.height)}`;
+      }),
+  ].join('|');
+
+  return { title: document.title, headings, elements, text, visual };
 }
 /* c8 ignore stop */
 
@@ -271,6 +328,7 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
     fingerprint,
     nodeId: nodeId(fingerprint),
     contentHash: createHash('sha256').update(data.text).digest('hex').slice(0, 12),
+    visualHash: createHash('sha256').update(data.visual).digest('hex').slice(0, 12),
   };
 }
 
@@ -397,6 +455,19 @@ export function classifyOutcome(
     before.contentHash !== after.contentHash
   ) {
     return { ...base, ...handled, kind: 'state-changed' };
+  }
+
+  // Same controls, same words, different picture. Reported as a working control
+  // with the reason attached, because "it did something you cannot read in the
+  // text" is a true and useful thing to say — and because the alternative was
+  // calling every zoom, pan and theme toggle a dead control (issue #1).
+  if (before.visualHash !== after.visualHash) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: 'the view changed visually — no text or control changed',
+    };
   }
 
   // A request failed and the user saw nothing happen. That silent failure is a
