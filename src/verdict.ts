@@ -25,7 +25,12 @@ export interface VerdictCoverage {
   states: number;
   walked: number;
   unwalked: number;
-  skipped: { reason: string; count: number }[];
+  /**
+   * Grouped by reason, with an example or two of what the reason meant. A bare
+   * "40 skipped (unreachable)" gives an agent no way to tell a closed drawer
+   * from a broken tool, and those call for opposite responses.
+   */
+  skipped: { reason: string; count: number; examples: string[] }[];
   limitHit: string | null;
   /** Coverage is heuristic. Restated here so a JSON consumer cannot miss it. */
   note: string;
@@ -68,15 +73,22 @@ const COVERAGE_NOTE =
   'Coverage is heuristic, never exhaustive. Unwalked is not the same as working.';
 
 function coverageOf(graph: UIGraph): VerdictCoverage {
-  const byReason = new Map<string, number>();
+  const byReason = new Map<string, { count: number; examples: Set<string> }>();
   for (const s of graph.coverage.skipped) {
-    byReason.set(s.reason, (byReason.get(s.reason) ?? 0) + 1);
+    const entry = byReason.get(s.reason) ?? { count: 0, examples: new Set<string>() };
+    entry.count++;
+    if (s.detail) entry.examples.add(s.detail);
+    byReason.set(s.reason, entry);
   }
   return {
     states: graph.coverage.statesFound,
     walked: graph.coverage.edgesWalked,
     unwalked: graph.coverage.edgesUnwalked,
-    skipped: [...byReason].map(([reason, count]) => ({ reason, count })),
+    skipped: [...byReason].map(([reason, { count, examples }]) => ({
+      reason,
+      count,
+      examples: [...examples].slice(0, 2),
+    })),
     limitHit: graph.coverage.limitHit,
     note: COVERAGE_NOTE,
   };
