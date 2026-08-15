@@ -5,6 +5,7 @@ import { DEFAULT_GRAPH_PATH, diffGraphs, loadGraph, saveGraph } from './graph.js
 import { reportDiff, reportWalk } from './report.js';
 import { diffVerdict, walkVerdict } from './verdict.js';
 import { captureLogin } from './login.js';
+import { loadRouteMap } from './routemap.js';
 
 /** Beside the graph, and gitignored for the same reason the graph is not. */
 const DEFAULT_SESSION_PATH = '.uigraph/session.json';
@@ -30,6 +31,7 @@ interface Args {
   fillForms?: boolean;
   replay: boolean;
   storageState?: string;
+  routes?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -54,6 +56,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--max-depth') args.maxDepth = Number(rest[++i]);
     else if (arg === '--settle') args.settleMs = Number(rest[++i]);
     else if (arg === '--storage-state') args.storageState = rest[++i];
+    else if (arg === '--routes') args.routes = rest[++i];
     else if (!arg.startsWith('-')) args.url = arg;
   }
   return args;
@@ -80,6 +83,13 @@ Options
   --storage-state <p>   session file to walk signed in, or where login should
                         save one (default ${DEFAULT_SESSION_PATH}). It holds
                         live cookies — keep it out of git
+  --routes <path>       (walk only) addresses the source says exist, checked
+                        against what the walk actually reached. Takes an App
+                        Atlas .app-atlas/atlas.json, or a JSON array of routes.
+                        Consulted after the walk, so a route it then has to
+                        open by address is a screen no control led to. The map
+                        is a hint, never ground truth: a disagreement is
+                        reported and never fails the run
   --replay              (diff only) re-check the baseline's own states instead
                         of exploring again. Much faster, because the baseline
                         records where each control led and a control that
@@ -138,7 +148,10 @@ async function main(): Promise<number> {
       );
       return 2;
     }
-    const graph = await walk(args.url, walkOptions);
+    const graph = await walk(args.url, {
+      ...walkOptions,
+      routeMap: args.routes ? loadRouteMap(args.routes) : undefined,
+    });
     saveGraph(graph, args.out);
     // A baseline taken from an app that errors on load, or that offered nothing
     // to walk, is not a baseline worth trusting — say so in the exit code.
@@ -160,6 +173,18 @@ async function main(): Promise<number> {
     const baseline = loadGraph(args.out);
     if (!baseline) {
       console.error(`error: no baseline at ${args.out} — run 'clickgraph walk <url>' first`);
+      return 2;
+    }
+    // Refused rather than ignored, for the same reason `walk --replay` is: a
+    // flag that silently does nothing hands back an unchecked run to someone
+    // who asked for the check. A diff reports what changed since the baseline;
+    // whether the app has a screen nothing links to is a question about the
+    // app as it stands, which is what a walk answers.
+    if (args.routes) {
+      console.error(
+        'error: --routes is checked while a baseline is built, not while one is compared — ' +
+          'run `clickgraph walk <url> --routes <path>`',
+      );
       return 2;
     }
     // Replay follows the baseline's own map, which is both what makes it fast

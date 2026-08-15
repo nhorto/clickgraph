@@ -8,8 +8,14 @@
 
 export const GRAPH_VERSION = '0.1';
 
-/** How a selector was derived. Earlier strategies survive redesigns better. */
-export type SelectorStrategy = 'testid' | 'id' | 'role-name' | 'text' | 'css';
+/**
+ * How a selector was derived. Earlier strategies survive redesigns better.
+ *
+ * `url` is not one of them — it names an address rather than an element, and it
+ * exists so a `goto` action can carry a label like everything else. Nothing
+ * resolves it to a control, because there is no control.
+ */
+export type SelectorStrategy = 'testid' | 'id' | 'role-name' | 'text' | 'css' | 'url';
 
 export interface Selector {
   strategy: SelectorStrategy;
@@ -71,10 +77,18 @@ export interface ElementDescriptor {
 }
 
 export interface Action {
-  kind: 'click' | 'hover' | 'select' | 'fill';
+  /**
+   * `goto` is the odd one out: it is not something a user did to a control, it
+   * is the run typing an address. It appears only in a node's `path` — the way
+   * back to a state seeded from a route map — and never as an edge, because
+   * there is no control to attribute it to and nothing to conclude from it.
+   */
+  kind: 'click' | 'hover' | 'select' | 'fill' | 'goto';
   selector: Selector;
   role: string;
   name: string;
+  /** For `goto`, the address to open. */
+  url?: string;
   /**
    * For `select`, the option that was chosen. Deliberately not part of the edge
    * key: an option list built from live data changes between runs, and a filter
@@ -250,6 +264,69 @@ export interface LoadHealth {
   likelyAuthWall?: boolean;
 }
 
+/* ---------- the static map, and where it disagrees ---------- */
+
+/**
+ * What became of one address the source code declared.
+ *
+ * The four outcomes are deliberately not a pass/fail axis. Only one of them
+ * (`errored`) is a statement about the app on its own; the rest are statements
+ * about the two artifacts disagreeing, and which one is wrong is not something
+ * this tool can know.
+ */
+export type RouteStatus =
+  /** The walk found its own way here by clicking. Map and app agree. */
+  | 'walked'
+  /**
+   * It exists and it loads, but nothing the walk clicked led to it. Either the
+   * app is missing a link, or the page is reached some way a walk cannot see —
+   * a deep link from an email, a redirect, a route only some role is shown.
+   */
+  | 'url-only'
+  /** Opening it did not produce a page. The map may be stale, or the route gone. */
+  | 'absent'
+  /** Opening it produced server errors or uncaught exceptions. This one is a defect. */
+  | 'errored'
+  /** Never opened — it takes parameters, or the run had no room left. */
+  | 'unchecked';
+
+export interface RouteCheck {
+  route: string;
+  status: RouteStatus;
+  /** Why, in the words a reader needs — never a bare status. */
+  detail?: string;
+  source?: string;
+  guards?: string[];
+}
+
+/**
+ * The static map beside what the walk actually found.
+ *
+ * Kept out of `coverage` on purpose. Coverage is what this run did; this is a
+ * comparison against something the run did not produce and cannot vouch for.
+ */
+export interface RouteMapReport {
+  /** The file the map came from, so a stale one can be traced. */
+  origin: string;
+  format: 'app-atlas' | 'routes';
+  declared: number;
+  /** Doors declared that a browser cannot land on: APIs, CLIs, queues, mobile screens. */
+  excluded: number;
+  checks: RouteCheck[];
+  /** Routes the walk reached that the map never declared. A fact about the map. */
+  undeclared: string[];
+  /**
+   * Not one declared address matched anything the walk reached.
+   *
+   * At that point the likeliest explanation is not that every page in the app
+   * is orphaned — it is that the map describes a different addressing scheme
+   * than the browser sees: a hash-routed SPA, an app served under a base path,
+   * a map built from a different repository. Reported as doubt about the map,
+   * because the alternative is a page of confident nonsense.
+   */
+  mapLooksUnrelated: boolean;
+}
+
 export interface UIGraph {
   version: string;
   baseUrl: string;
@@ -259,6 +336,8 @@ export interface UIGraph {
   nodes: Record<string, UINode>;
   edges: UIEdge[];
   coverage: Coverage;
+  /** Present only when a run was given a route map to check itself against. */
+  routes?: RouteMapReport;
 }
 
 /* ---------- diff ---------- */

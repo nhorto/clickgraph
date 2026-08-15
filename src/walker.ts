@@ -1,14 +1,26 @@
 import type {
-  Action, LoadHealth, SkippedElement, UIEdge, UIGraph, UINode, WalkConfig,
+  Action, LoadHealth, RouteCheck, RouteMapReport, SkippedElement, UIEdge, UIGraph, UINode,
+  WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
 import { ActionWatch, captureState, type PageSnapshot } from './observer.js';
 import {
   attempt, looksLikeAuthWall, markAlreadyApplied, openSession, screen, submittableForms,
 } from './act.js';
+import { routeMatches, type RouteMap } from './routemap.js';
 
 export interface WalkOptions extends Partial<WalkConfig> {
   onProgress?: (message: string) => void;
+  /**
+   * Addresses the source code says exist, checked against what the walk found.
+   *
+   * Consulted only after the walk has exhausted its own frontier, and the order
+   * is the feature: a route reached by clicking is indistinguishable from one
+   * reached by typing its address unless the clicking is allowed to happen
+   * first. Seed at the start and every declared route is trivially "reached",
+   * which is the report saying nothing at some expense.
+   */
+  routeMap?: RouteMap;
 }
 
 export const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
@@ -34,7 +46,7 @@ export function resolveConfig(baseUrl: string, overrides: Partial<WalkConfig>): 
 }
 
 export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<UIGraph> {
-  const { onProgress, ...overrides } = options;
+  const { onProgress, routeMap, ...overrides } = options;
   const config = resolveConfig(baseUrl, overrides);
   const log = onProgress ?? (() => {});
 
@@ -46,6 +58,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   let limitHit: string | null = null;
   let actionsUsed = 0;
   let reentries = 0;
+  let routes: RouteMapReport | undefined;
 
   const session = await openSession(baseUrl, config);
   const { page } = session;
@@ -83,7 +96,179 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     const queuedPaths = new Map<string, Action[]>([[entry.nodeId, []]]);
     const expanded = new Set<string>();
 
-    while (frontier.length > 0) {
+    /**
+     * Open every declared address the walk never found its own way to, and say
+     * what was there.
+     *
+     * Runs once, after the frontier is empty, so "the walk reached it" has
+     * already been decided by the walk. Anything that turns up here is by
+     * definition a screen no control led to — which is the finding — and it goes
+     * onto the frontier so its own controls are still walked rather than left as
+     * a name in a report.
+     */
+    const consultRouteMap = async (map: RouteMap): Promise<RouteMapReport> => {
+      const checks: RouteCheck[] = [];
+      // Snapshotted before a single address is opened. `walked` has to mean the
+      // walk got there by clicking, and seeding adds nodes as it goes — compare
+      // against the live set and a catch-all route would call itself walked on
+      // the strength of a page this loop had just seeded two lines earlier.
+      const walkReached = Object.values(nodes).map((n) => n.fingerprint.route);
+      const walkedNodeIds = new Set(Object.keys(nodes));
+
+      for (const hint of map.hints) {
+        const base = { route: hint.route, source: hint.source, guards: hint.guards };
+
+        if (walkReached.some((seen) => routeMatches(hint.route, seen))) {
+          checks.push({ ...base, status: 'walked' });
+          continue;
+        }
+        if (hint.parameterized) {
+          checks.push({
+            ...base, status: 'unchecked',
+            detail: 'takes parameters, so there is no address to open without inventing one',
+          });
+          continue;
+        }
+        if (Object.keys(nodes).length >= config.maxStates) {
+          limitHit = limitHit ?? `maxStates (${config.maxStates})`;
+          checks.push({
+            ...base, status: 'unchecked',
+            detail: `the run was already at its ${config.maxStates}-state budget`,
+          });
+          continue;
+        }
+
+        // Resolved against the origin, never against the entry page's own path.
+        // A base-path deployment would need the prefix, but an entry URL like
+        // `/orders` is just as likely to be a starting screen as a mount point,
+        // and guessing wrong turns every declared route into a false 404. When
+        // that is what happened, nothing matches at all, and `mapLooksUnrelated`
+        // below says so in one sentence instead of a page of accusations.
+        const target = new URL(hint.route, new URL(baseUrl).origin).href;
+        const address: Action = {
+          kind: 'goto',
+          selector: { strategy: 'url', value: target, label: `address ${hint.route}` },
+          role: 'address',
+          name: hint.route,
+          url: target,
+        };
+
+        const watch = new ActionWatch(page);
+        const status = await session.gotoUrl(target);
+        const observed = watch.stop();
+        if (status === null) {
+          checks.push({ ...base, status: 'absent', detail: 'the address did not open' });
+          continue;
+        }
+
+        // Same severity rule the entry page is held to: a 5xx or an uncaught
+        // exception is the app failing, and a 4xx is only the map being wrong
+        // about an address. One is a defect, the other is a disagreement, and
+        // they send whoever reads the report to different files.
+        if (status >= 500 || observed.consoleErrors.length > 0) {
+          checks.push({
+            ...base, status: 'errored',
+            detail: [
+              status >= 500 ? `${status} at ${hint.route}` : '',
+              ...observed.consoleErrors,
+            ].filter(Boolean).slice(0, 2).join(' · '),
+          });
+          continue;
+        }
+        if (status >= 400) {
+          checks.push({ ...base, status: 'absent', detail: `${status} at ${hint.route}` });
+          continue;
+        }
+
+        const landed = await captureState(page);
+
+        // It opened onto a state the walk itself had reached — a redirect, or an
+        // alias. Map and app agree; there is nothing orphaned about it.
+        //
+        // Compared against the states the walk found, not against every state
+        // known by now: two declared addresses can both land on one page that
+        // only an address opens, and the second must not be able to call itself
+        // walked because the first put it in the graph a moment ago.
+        if (walkedNodeIds.has(landed.nodeId)) {
+          checks.push({
+            ...base, status: 'walked',
+            detail: landed.fingerprint.route === hint.route
+              ? undefined
+              : `opening it lands on ${landed.fingerprint.route}, which the walk already covered`,
+          });
+          continue;
+        }
+        if (nodes[landed.nodeId]) {
+          checks.push({
+            ...base, status: 'url-only',
+            detail:
+              `it lands on ${landed.fingerprint.route}, which another declared address ` +
+              'also opens and which nothing the walk clicked led to',
+          });
+          continue;
+        }
+
+        const gated = looksLikeAuthWall(landed.url, landed.elements);
+        checks.push({
+          ...base, status: 'url-only',
+          detail: gated
+            ? hint.guards.length > 0
+              ? `it answers with a login screen, which is what the map says guards it (${hint.guards[0]})`
+              : 'it answers with a login screen, and the map named no guard on it'
+            : `nothing the walk clicked led here — it opened with ${landed.elements.length} control(s)`,
+        });
+
+        nodes[landed.nodeId] = {
+          id: landed.nodeId,
+          url: landed.url,
+          title: landed.title,
+          fingerprint: landed.fingerprint,
+          path: [address],
+          interactiveCount: landed.elements.length,
+        };
+        log(`  → ${hint.route} exists but nothing led to it`);
+        // A login form is not the app behind it, and walking one proves nothing
+        // — the same reason the entry page refuses to count as a clean run.
+        if (gated) {
+          unwalked += landed.elements.length;
+          continue;
+        }
+        queuedPaths.set(landed.nodeId, [address]);
+        frontier.push(landed);
+      }
+
+      // Every address the walk reached that the map never mentioned. A statement
+      // about the map, not about the app — which is why it is a bare list and
+      // never a finding.
+      const undeclared = [...new Set(Object.values(nodes).map((n) => n.fingerprint.route))]
+        .filter((seen) => !map.hints.some((h) => routeMatches(h.route, seen)))
+        .sort();
+
+      const checkable = map.hints.filter((h) => !h.parameterized).length;
+      return {
+        origin: map.origin,
+        format: map.format,
+        declared: map.hints.length,
+        excluded: map.excluded,
+        checks,
+        undeclared,
+        mapLooksUnrelated:
+          checkable > 0 &&
+          Object.keys(nodes).length > 0 &&
+          !checks.some((c) => c.status === 'walked'),
+      };
+    };
+
+    let mapPending = Boolean(routeMap);
+    while (frontier.length > 0 || mapPending) {
+      // The map is consulted only once the walk has nothing left of its own —
+      // that is what makes "no control led here" a claim the walk has earned.
+      if (frontier.length === 0) {
+        mapPending = false;
+        log(`checking ${routeMap!.hints.length} declared route(s) against what was walked`);
+        routes = await consultRouteMap(routeMap!);
+        continue;
+      }
       const state = frontier.shift()!;
       if (expanded.has(state.nodeId)) continue;
       expanded.add(state.nodeId);
@@ -173,7 +358,13 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             interactiveCount: after.elements.length,
           };
           log(`  → discovered ${after.fingerprint.route}`);
-          if (newPath.length < config.maxDepth) {
+          // Depth is how many clicks deep, so the address that opened a seeded
+          // page does not spend one. Counting it would explore every page the
+          // route map found one level shallower than the entry page's own tree,
+          // for no reason a reader of the budget could guess at. Identical to
+          // `newPath.length` for anything the walk clicked its way to.
+          const clicksDeep = newPath.filter((a) => a.kind !== 'goto').length;
+          if (clicksDeep < config.maxDepth) {
             queuedPaths.set(after.nodeId, newPath);
             frontier.push(after);
           } else {
@@ -206,5 +397,6 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       mode: 'walk',
       reentries,
     },
+    routes,
   };
 }

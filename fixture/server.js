@@ -44,6 +44,16 @@
  * be inferred and guessing it would mean typing into fields that do not belong
  * together.
  *
+ * Run with ORPHAN=1 to add /audit — a real, working screen that nothing on the
+ * site links to. It is reachable only by typing its address, which is exactly
+ * what fixture/routes.json declares and what a walk on its own can never find.
+ * The screen carries one working button and one dead one, because finding a page
+ * is only worth anything if its controls then get walked. Beside it the map
+ * declares two addresses that behave differently on arrival — one 404s and one
+ * 500s — because "the map is stale" and "the page is broken" must not come back
+ * as the same sentence. Everything else the map declares is reachable by
+ * clicking and must stay silent.
+ *
  * Run with ROUTE=1 to add a whole new screen, reached by a new link on /orders,
  * with a dead button on it. This is the case that separates a walk from a
  * replay: a walk discovers the screen and finds the dead button, while a replay
@@ -60,6 +70,7 @@ const ROUTE = process.env.ROUTE === '1';
 const CLUSTER = process.env.CLUSTER === '1';
 const CANVAS = process.env.CANVAS === '1';
 const CRUMB = process.env.CRUMB === '1';
+const ORPHAN = process.env.ORPHAN === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -318,6 +329,28 @@ const routes = {
       }
     : {}),
 
+  // No link anywhere on the site points here. That is the whole point: the page
+  // works, and a walk that only clicks can never arrive. Its two buttons are
+  // there so that finding the screen is worth something — a screen named in a
+  // report and never opened would be the same silence in a longer sentence.
+  ...(ORPHAN
+    ? {
+        '/audit': page('Audit log', `
+    <h1>Audit log</h1>
+    <p>Nothing links here. You have to know the address.</p>
+    <button id="audit-refresh" data-testid="audit-refresh">Reload entries</button>
+    <button data-testid="audit-export">Export audit log</button>
+    <div id="audit-slot"></div>
+    <script>
+      document.getElementById('audit-refresh').addEventListener('click', () => {
+        document.getElementById('audit-slot').textContent = 'Reloaded.';
+      });
+      // "Export audit log" is wired to nothing — the dead control that only
+      // exists on the screen nothing links to.
+    </script>`),
+      }
+    : {}),
+
   '/about': page('About', `<h1>About</h1><p>Acme, since 1998.</p>`),
 };
 
@@ -343,6 +376,23 @@ createServer((req, res) => {
     // Planted defect: this endpoint is broken.
     res.writeHead(500, { 'content-type': 'application/json' });
     return res.end('{"error":"could not persist settings"}');
+  }
+
+  // A second declared address for a page that already has no way in. The old URL
+  // still redirects, which is good manners and no help at all — following it
+  // arrives somewhere nothing links to either, so it cannot count as a page the
+  // walk reached.
+  if (ORPHAN && path === '/audit-log') {
+    res.writeHead(302, { location: '/audit' });
+    return res.end();
+  }
+
+  // Declared in the route map, and broken rather than missing. A 500 is the app
+  // failing; the 404 below it is only the map being out of date. A run that
+  // reports those as one thing is telling whoever reads it to fix the wrong file.
+  if (ORPHAN && path === '/broken-export') {
+    res.writeHead(500, { 'content-type': 'text/html' });
+    return res.end(page('Export', '<h1>500</h1><p>the export service is down</p>'));
   }
 
   const body = routes[path];

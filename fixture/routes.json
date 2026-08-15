@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "What the fixture's source would say its addresses are, in the plain format.",
+    "Deliberately imperfect in both directions, because a route map is a hint and",
+    "the report has to survive it being wrong either way.",
+    "",
+    "Reachable by clicking, and so must stay silent:  / /orders /settings /about",
+    "Reachable by clicking, and parameterized:        /orders/[id]",
+    "Declared, real, and nothing links to it:         /audit",
+    "Declared, and redirects to that same orphan:     /audit-log",
+    "Declared, parameterized, never reached:          /invoices/[id]",
+    "Declared and gone (the map is stale):            /legacy-reports",
+    "Declared, there, and erroring (the app is bad):  /broken-export",
+    "",
+    "/signup and /feedback are left out on purpose: the walk reaches them, so they",
+    "come back as addresses the map failed to declare rather than as findings."
+  ],
+  "routes": [
+    "/",
+    "/orders",
+    "/orders/[id]",
+    "/settings",
+    "/about",
+    "/audit",
+    "/audit-log",
+    "/invoices/[id]",
+    "/legacy-reports",
+    "/broken-export"
+  ]
+}

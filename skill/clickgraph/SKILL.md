@@ -88,6 +88,52 @@ npx clickgraph walk http://localhost:5173 --json
 Then keep replaying. Do not report a replay with `statesUnexplored > 0` as a
 pass; the screen you just built is the one it did not open.
 
+## Pages nothing links to
+
+A walk only reaches screens something links to. If you just built a page and
+forgot to link it — or deleted the link along with the feature that used it — a
+walk cannot tell it apart from a page that does not exist, and the report comes
+back clean.
+
+`--routes` checks the walk against the addresses the source declares. It takes an
+App Atlas `.app-atlas/atlas.json` or a plain JSON array of routes:
+
+```bash
+npx clickgraph walk http://localhost:5173 --routes .app-atlas/atlas.json --json
+```
+
+The map is consulted after the walk, so anything it then has to open by address
+is a screen no control led to. That screen is walked too, so its own dead
+controls show up in `findings` like any others.
+
+```json
+{ "routes": {
+    "walked": 5,
+    "urlOnly": [ { "route": "/audit", "detail": "nothing the walk clicked led here" } ],
+    "errored": [ { "route": "/broken-export", "detail": "500 GET /broken-export" } ],
+    "absent":  [ { "route": "/legacy-reports", "detail": "404 GET /legacy-reports" } ],
+    "undeclared": ["/signup"], "mapLooksUnrelated": false } }
+```
+
+How to read it, and what not to claim:
+
+- `urlOnly` — the page works and nothing links to it. Report it as a missing
+  link, not as a broken page. Some are intentional (a target for a deep link
+  from an email), so ask rather than assume.
+- `errored` — the address is there and answering with a 5xx or an uncaught
+  exception. This one is about the app, and it is worth reporting as a defect.
+- `absent` — declared and not there. The route map is as likely to be the stale
+  side as the app is. Do not report this as a broken page.
+- `undeclared` — routes the walk reached that the map never listed. That is a
+  fact about the map, not about the app.
+- `mapLooksUnrelated: true` — nothing matched. The map is about a different
+  addressing scheme (a hash-routed app, a base path, another repo). Conclude
+  nothing from the rows and say the map did not apply.
+
+None of this changes `ok` or the exit code, because a static map can be stale and
+a hint must not fail a build. `--routes` belongs to `walk`; on `diff` it is
+refused rather than ignored.
+
 ## Apps behind a login
 
 If `load.likelyAuthWall` is true, the run describes the login page and nothing

@@ -438,6 +438,12 @@ export function resolve(page: Page, selector: Selector) {
     }
     case 'text':
       return page.getByText(selector.value, { exact: true }).first();
+    case 'url':
+      // An address is not an element. Reaching here means a `goto` leaked out of
+      // a node's path and into something that expected a control, which is a
+      // wiring mistake — and a silent undefined would surface much later as an
+      // unexplained crash on a page nobody was looking at.
+      throw new Error(`cannot resolve an address as an element: ${selector.value}`);
   }
 }
 

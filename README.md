@@ -115,6 +115,64 @@ where a replay may say `/#overview [Where to start reading]`, because the
 bracket is a disambiguator that appears only when several states share a route.
 Compare findings between runs, not sentences.
 
+### Checking the walk against what the source says exists
+
+A walk can only find screens something links to. A page whose link was never
+added, or was deleted with the feature that used it, is invisible to clicking —
+and it is invisible in exactly the way that produces a clean report.
+
+`--routes` gives the walk the addresses the source code declares, and it is
+consulted **after** the walk has run out of places to click. The order is the
+whole feature: a route the walk already reached stays silent, and one it then has
+to open by typing the address is a screen no control led to.
+
+```bash
+# an App Atlas atlas — its PAGE doors are the addresses a browser can land on
+npx clickgraph walk http://localhost:3000 --routes .app-atlas/atlas.json
+
+# or a plain list, from any other source or hand-written
+npx clickgraph walk http://localhost:3000 --routes routes.json
+```
+
+```
+Declared routes
+  9 browser route(s) declared in fixture/routes.json
+  5 reached by walking — map and app agree
+  ERROR     /broken-export
+            it opened and errored — 500 GET /broken-export
+  NO WAY IN /audit
+            nothing the walk clicked led here — it opened with 8 control(s)
+  NOT THERE /legacy-reports
+            404 GET /legacy-reports
+  1 not opened — takes parameters, so there is no address to open without inventing one
+  2 route(s) walked that the map never declared: /feedback, /signup
+```
+
+Once a page is found this way it is walked like any other, which is where the
+value is: on the fixture, `Export audit log` is a dead button that exists only on
+the screen nothing links to, and no walk had ever reported it.
+
+Four rules hold this section to what it can actually prove:
+
+- **The map is a hint, never ground truth.** A disagreement means one of the two
+  artifacts is out of date and the run cannot say which, so nothing here changes
+  the exit code. What the walk *observed* still counts: a declared address that
+  answers with a 5xx or an uncaught exception is the app failing, and it is
+  reported as an error. A 404 is only the map being wrong about an address.
+- **A parameterized route is not opened.** `/orders/[id]` has no address without
+  an invented id, and inventing one manufactures a 404 that reads as a missing
+  page. It is reported as unopened. If the walk reached `/orders/1042` on its
+  own, the declared and observed spellings are matched as the one door they are.
+- **Only doors a browser can land on are compared.** App Atlas maps every
+  entrance a codebase has — `GET /api/…`, CLI commands, queues, mobile screens.
+  Walking those in a browser would prove nothing about a UI, so they are counted
+  as excluded rather than reported as pages nothing links to.
+- **A map that matches nothing is doubted, not obeyed.** If not one declared
+  address lines up with anything walked, the likelier explanation is that the map
+  describes different addresses than the browser sees — a hash-routed app, a base
+  path, another repository — than that every page in the app is orphaned. The run
+  says so in one sentence instead of a page of false orphans.
+
 ### What an agent reads
 
 `--json` prints a compact verdict rather than the whole graph — an agent that has
@@ -145,7 +203,7 @@ cp -r skill/clickgraph ~/.claude/skills/clickgraph
 ## How it works
 
 1. **Explore.** Breadth-first from the base URL. At each state, enumerate every visible, enabled control, click one, and classify what happened.
-2. **Classify.** `navigated` · `state-changed` · `network-only` · `no-effect` · `error`. `no-effect` is the money finding: a control that renders but produces no navigation, no state change, and no network traffic.
+2. **Classify.** `navigated` · `state-changed` · `network-only` · `visual-only` · `no-effect` · `error`. `no-effect` is the money finding: a control that renders but produces no navigation, no state change, and no network traffic.
 3. **Graph.** Nodes are UI states, edges are actions with their observed outcome, written to `.uigraph/graph.json` — a repo artifact that diffs in review like any other file.
 4. **Diff.** Re-walk and compare. A control that worked and now does nothing is a regression; a control that never existed and does nothing on arrival is a regression too — that is the tracer bullet firing.
 
@@ -217,7 +275,7 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 1. **Discovery first, then baseline.** Run one records what *is*; no spec needed. From then on the oracle is the diff.
 2. **Blank over confident falsehood.** Unwalked is labeled unwalked. Coverage is never implied to be exhaustive.
 3. **The LLM authors; deterministic code executes.** v1 is entirely deterministic; AI enters later only to heal broken replays and judge redesigned-vs-broken.
-4. **The static map is a hint, not ground truth.** App Atlas can seed the walk, but is not required — and where map and walk disagree, that disagreement is itself the report.
+4. **The static map is a hint, not ground truth.** `--routes` seeds the walk from what the source declares, and is never required. Where map and walk disagree, that disagreement is the report and not a verdict: it never changes the exit code, because either side can be the stale one. The exception is what the walk itself observed — a declared address answering with a 5xx is the app failing, not the map being wrong.
 
 ## Verify
 
@@ -225,7 +283,7 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through eleven scenarios — unchanged (twice, for
+Runs the fixture app through twelve scenarios — unchanged (twice, for
 determinism), a broken interaction, a new feature with one dead control, the
 JSON verdict agreeing with the exit code, an app behind a login screen, a form
 that drops its submission beside one that works, `--replay` finding all of the
@@ -233,10 +291,11 @@ above while naming the screen it declined to open, a budget-limited baseline
 that must not invent regressions, and a screen with no `<form>` on it whose
 fields have to be grouped by layout or left alone, and a working zoom beside a
 dead button on the same canvas, and a breadcrumb marked current in CSS beside a
-broken button wearing the same class. 59 checks, all passing as of the last
-commit.
+broken button wearing the same class, and a route map declaring a page nothing
+links to beside four declared addresses that must stay silent. 70 checks, all
+passing as of the last commit.
 
-The last two scenarios are built the same way on purpose. Each of those fixes
+The last three scenarios are built the same way on purpose. Each of those fixes
 trades a false positive for the risk of its opposite, so each gets a check that
 the cure did not become the disease — a rule that has quietly started excusing
 everything still shows green if the only thing tested is the case it was written
@@ -290,8 +349,9 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 | Path | What |
 |---|---|
 | `src/act.ts` | exercising one control: safety refusals, selects, forms, hover retry — the rules a walk and a replay must share |
-| `src/walker.ts` | breadth-first exploration and budgets |
+| `src/walker.ts` | breadth-first exploration, budgets, and the route-map check that runs once clicking is exhausted |
 | `src/replay.ts` | re-checking a known graph, routed to avoid reloads |
+| `src/routemap.ts` | reading a static route map, and matching declared addresses to walked ones |
 | `src/observer.ts` | in-page control extraction, selector derivation, outcome classification |
 | `src/fingerprint.ts` | two-tier state identity |
 | `src/graph.ts` | save/load and the graph diff |
@@ -300,8 +360,9 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 
 ## Next
 
-See [ROADMAP.md](ROADMAP.md). The short version: the inner loop is now roughly
-twice as fast via `--replay`, and what is left of the reloads is the next thing
-to cut. Then field clusters outside a `<form>`, the App Atlas pairing, and a
-graph viewer. The LLM healer comes last, on purpose: the deterministic core has
-to earn trust first.
+See [ROADMAP.md](ROADMAP.md). The short version: the inner loop is faster via
+`--replay`, though the timing weakened the case for chasing the remaining
+reloads — that work now has to be argued in seconds, not reload counts. The App
+Atlas pairing is in. What is left is the graph viewer, publishing to npm, and
+the LLM healer last of all, on purpose: the deterministic core has to earn trust
+first.

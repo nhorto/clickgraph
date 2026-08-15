@@ -184,11 +184,16 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
   const missingStates = new Map<string, Change>();
   for (const id of Object.keys(baseline.nodes)) {
     if (!current.nodes[id]) {
+      const was = baseline.nodes[id];
       const change: Change = {
         kind: 'missing-state',
         severity: 'regression',
-        summary: `state no longer reachable: ${baseline.nodes[id].fingerprint.route}`,
-        detail: `was reached via ${baseline.nodes[id].path.length} action(s); either the screen changed shape or the path into it broke`,
+        summary: `state no longer reachable: ${was.fingerprint.route}`,
+        // A state that was only ever reached by typing its address has no path
+        // that could have broken, so the two explanations are different ones.
+        detail: was.path[0]?.kind === 'goto'
+          ? 'it was only ever reached by opening its address; either the screen changed shape or that address stopped serving it'
+          : `was reached via ${was.path.length} action(s); either the screen changed shape or the path into it broke`,
       };
       missingStates.set(id, change);
       changes.push(change);

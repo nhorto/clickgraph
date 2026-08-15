@@ -255,6 +255,17 @@ export interface Session {
   context: BrowserContext;
   /** Return to a known state by replaying its action path from the base URL. */
   gotoPath(path: Action[]): Promise<boolean>;
+  /**
+   * Open one address directly and report the status the document answered with,
+   * or null if it never answered.
+   *
+   * The status has to come from the navigation itself rather than from watching
+   * the network, because what matters is the status of the page that was landed
+   * on. An address that redirects to a 404 answers 404 at a URL nobody asked
+   * for, and matching error lines against the requested address would score that
+   * as a page that exists.
+   */
+  gotoUrl(url: string): Promise<number | null>;
   close(): Promise<void>;
 }
 
@@ -280,9 +291,14 @@ export async function openSession(baseUrl: string, config: WalkConfig): Promise<
     page,
     context,
     async gotoPath(path: Action[]): Promise<boolean> {
-      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      // A path that begins with an address starts there instead of at the base
+      // URL. That is how a state seeded from a route map is returned to: there
+      // is no click path into it — that is the whole finding — so the address
+      // is the only way back, and it has to survive into every later re-entry.
+      const lead = path[0]?.kind === 'goto' ? path[0] : null;
+      await page.goto(lead?.url ?? baseUrl, { waitUntil: 'domcontentloaded' });
       await settle(page, config.settleMs);
-      for (const action of path) {
+      for (const action of lead ? path.slice(1) : path) {
         try {
           const step = resolve(page, action.selector);
           // A step that is not there will not appear by waiting five seconds for
@@ -295,6 +311,17 @@ export async function openSession(baseUrl: string, config: WalkConfig): Promise<
         }
       }
       return true;
+    },
+    async gotoUrl(url: string): Promise<number | null> {
+      try {
+        const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+        await settle(page, config.settleMs);
+        // A same-document navigation answers no response of its own. Nothing
+        // failed, so it counts as served rather than as never answered.
+        return response ? response.status() : 200;
+      } catch {
+        return null;
+      }
     },
     close: () => browser.close(),
   };

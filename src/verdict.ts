@@ -11,7 +11,7 @@
  * "no findings" is only meaningful next to how much was actually walked.
  */
 
-import type { GraphDiff, UIGraph } from './types.js';
+import type { GraphDiff, RouteCheck, UIGraph } from './types.js';
 import { actionLabel, nodeLabel } from './graph.js';
 
 export interface VerdictFinding {
@@ -19,6 +19,42 @@ export interface VerdictFinding {
   control: string;
   state: string;
   detail: string;
+}
+
+/**
+ * The static map's side of the story, kept apart from `findings`.
+ *
+ * `findings` are controls the walk exercised and watched fail. These are two
+ * artifacts disagreeing, where either one can be the wrong one — a different
+ * kind of claim, and rolling them together would let a stale routes file
+ * inflate the count of things wrong with the app.
+ */
+export interface VerdictRoutes {
+  origin: string;
+  declared: number;
+  /** Declared addresses the walk reached by clicking. Map and app agree. */
+  walked: number;
+  /** They load, and nothing the walk clicked led to them. */
+  urlOnly: RouteCheck[];
+  /** Declared and not there. The map may be the stale one. */
+  absent: RouteCheck[];
+  /** Declared, there, and erroring. The only one of these that is about the app alone. */
+  errored: RouteCheck[];
+  /** Never opened — parameterized, or out of budget. */
+  unchecked: number;
+  /** Reached and never declared. A fact about the map. */
+  undeclared: string[];
+  /**
+   * Not one declared address matched anything walked, so the map is probably
+   * about something else and every row above is doubtful.
+   *
+   * A field rather than only a sentence in `note`, because the text report
+   * withholds those rows entirely in this case and the two surfaces have to say
+   * the same thing. A consumer that reads prose to decide whether to trust data
+   * is one that will eventually not read it.
+   */
+  mapLooksUnrelated: boolean;
+  note: string;
 }
 
 export interface VerdictCoverage {
@@ -65,6 +101,8 @@ export interface WalkVerdict {
   };
   findings: VerdictFinding[];
   coverage: VerdictCoverage;
+  /** Present only when the run was given a route map to check itself against. */
+  routes?: VerdictRoutes;
   graphPath: string;
 }
 
@@ -84,6 +122,32 @@ export interface DiffVerdict {
 
 const COVERAGE_NOTE =
   'Coverage is heuristic, never exhaustive. Unwalked is not the same as working.';
+
+const ROUTES_NOTE =
+  'The route map is a hint from the source, not ground truth. A disagreement means ' +
+  'one of the two is out of date, and this run cannot say which.';
+
+function routesOf(graph: UIGraph): VerdictRoutes | undefined {
+  const report = graph.routes;
+  if (!report) return undefined;
+  const of = (status: RouteCheck['status']) => report.checks.filter((c) => c.status === status);
+  return {
+    origin: report.origin,
+    declared: report.declared,
+    walked: of('walked').length,
+    urlOnly: of('url-only'),
+    absent: of('absent'),
+    errored: of('errored'),
+    unchecked: of('unchecked').length,
+    undeclared: report.undeclared,
+    mapLooksUnrelated: report.mapLooksUnrelated,
+    note: report.mapLooksUnrelated
+      ? 'Nothing in this map matched anything the walk reached, so the map most likely ' +
+        'describes different addresses than the browser sees — a hash-routed app, a base ' +
+        'path, or another repository. Treat every row below as doubtful.'
+      : ROUTES_NOTE,
+  };
+}
 
 function coverageOf(graph: UIGraph): VerdictCoverage {
   const byReason = new Map<string, { count: number; examples: Set<string> }>();
@@ -164,6 +228,27 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
     verdict = `of ${graph.coverage.edgesWalked} interaction(s) walked, ${parts.join(' and ')}`;
   }
 
+  // The map's disagreement is appended to the sentence for the same reason the
+  // replay's unexplored screens are: a page nothing links to is invisible in
+  // every count above, and an agent that reads only the verdict would be told
+  // the app is fine by a run that never opened one of its screens.
+  const routeReport = graph.routes;
+  if (routeReport && !routeReport.mapLooksUnrelated) {
+    const count = (status: string) => routeReport.checks.filter((c) => c.status === status).length;
+    const parts = [
+      count('errored') > 0 ? `${count('errored')} errored on arrival` : '',
+      count('url-only') > 0 ? `${count('url-only')} that nothing walked leads to` : '',
+      count('absent') > 0 ? `${count('absent')} that did not open` : '',
+    ].filter(Boolean);
+    if (parts.length > 0) {
+      verdict += `; of ${routeReport.declared} declared route(s), ${parts.join(', ')}`;
+    }
+  } else if (routeReport?.mapLooksUnrelated) {
+    verdict +=
+      `; the route map at ${routeReport.origin} matched nothing this walk reached, so it ` +
+      'describes different addresses than the browser sees — nothing was concluded from it';
+  }
+
   return {
     tool: 'clickgraph',
     command: 'walk',
@@ -181,6 +266,7 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
     },
     findings,
     coverage: coverageOf(graph),
+    routes: routesOf(graph),
     graphPath,
   };
 }

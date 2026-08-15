@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "The same question asked in App Atlas's own format, trimmed to the fields the",
+    "reader uses. It exists to prove one filter: App Atlas maps every door a",
+    "codebase opens, and only the ones it marks PAGE are addresses a browser can",
+    "land on. GET /api/ping is a real door and walking it in a browser would prove",
+    "nothing about a UI, so it must be counted as excluded and never reported as a",
+    "route nothing links to."
+  ],
+  "meta": {
+    "formatVersion": 1,
+    "name": "clickgraph-fixture",
+    "frameworks": ["Next.js"]
+  },
+  "nodes": [
+    {
+      "id": "app:fixture",
+      "kind": "app",
+      "name": "clickgraph-fixture"
+    },
+    {
+      "id": "endpoint:page:/",
+      "kind": "endpoint",
+      "name": "/",
+      "path": "app/page.tsx",
+      "meta": { "endpointKind": "http-route", "method": "PAGE", "route": "/", "framework": "Next.js", "guards": [] }
+    },
+    {
+      "id": "endpoint:page:/orders",
+      "kind": "endpoint",
+      "name": "/orders",
+      "path": "app/orders/page.tsx",
+      "meta": { "endpointKind": "http-route", "method": "PAGE", "route": "/orders", "framework": "Next.js", "guards": [] }
+    },
+    {
+      "id": "endpoint:page:/audit",
+      "kind": "endpoint",
+      "name": "/audit",
+      "path": "app/audit/page.tsx",
+      "meta": { "endpointKind": "http-route", "method": "PAGE", "route": "/audit", "framework": "Next.js", "guards": [] }
+    },
+    {
+      "id": "endpoint:api:/api/ping",
+      "kind": "endpoint",
+      "name": "GET /api/ping",
+      "path": "app/api/ping/route.ts",
+      "meta": { "endpointKind": "http-route", "method": "GET", "route": "/api/ping", "framework": "Next.js", "guards": [] }
+    }
+  ],
+  "edges": []
+}

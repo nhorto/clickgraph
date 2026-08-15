@@ -283,10 +283,46 @@ change the app deliberately, and a walk is what they are checking.)
 
 ## Phase 4 — the pairing and the showpiece
 
-- [ ] Seed the walk from an App Atlas route map instead of discovering blind,
-      and report static-vs-dynamic disagreement as its own findings section.
-      The static map is a hint, never ground truth — where map and walk
-      disagree, the disagreement is the report.
+- [x] Seed the walk from a route map, and report static-vs-dynamic disagreement
+      as its own findings section. `--routes` takes an App Atlas `atlas.json` or
+      a plain list, sniffed rather than declared, because making an agent
+      convert one file into another before it can ask a question ends with the
+      question not being asked.
+
+      The design decision that made it work: the map is consulted **after** the
+      walk exhausts its own frontier, not before. Seeding first is the obvious
+      reading of "seed the walk", and it is the one that produces nothing — every
+      declared route becomes trivially reached, and the report has no way to
+      separate a page the app links to from a page only its address opens. Run
+      last, the same navigation answers the question the section exists for.
+
+      Finding the page is half of it. A screen opened this way goes onto the
+      frontier and is walked like any other, which is how the fixture's
+      `Export audit log` — a dead button living only on the screen nothing links
+      to — became reportable at all.
+
+      Four refusals hold it to what it can prove, and each one is a case the
+      fixture puts beside the case that must still be reported: an address is
+      matched against the walk's own normalized routes, so `/orders/[id]` and a
+      walked `/orders/1042` are one door; a parameterized route that was *not*
+      reached is left unopened rather than visited with an invented id, which
+      would manufacture a 404 that reads as a missing page; only App Atlas's
+      `PAGE` doors are compared, because walking `GET /api/…` in a browser proves
+      nothing about a UI; and a map matching nothing at all is reported as a map
+      about something else — a hash-routed app, a base path, another repo —
+      rather than as an app whose every page is orphaned.
+
+      Nothing here changes the exit code, which is the roadmap's own rule
+      applied: a hint that can be stale must not fail a build. The one exception
+      is what the walk *observed* rather than what the map claimed — a declared
+      address answering with a 5xx or an uncaught exception is the app failing,
+      and is reported as an error. A 404 is only the map being wrong.
+
+      Scoped to `walk`. `diff --routes` is refused rather than ignored, for the
+      same reason `walk --replay` is: a flag that silently does nothing hands
+      back an unchecked run to whoever asked for the check. Whether a diff should
+      report a *newly* orphaned page — a link deleted with the feature that used
+      it — is a real question this does not answer.
 - [ ] Graph visualization: a viewer over `graph.json`, as a separate optional
       package so the CLI stays headless. This serves adoption more than the
       agent customer — it is the demo, not the product.

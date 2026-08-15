@@ -76,7 +76,15 @@ export function reportWalk(graph: UIGraph): string {
     routeCounts.set(node.fingerprint.route, (routeCounts.get(node.fingerprint.route) ?? 0) + 1);
   }
   for (const node of Object.values(graph.nodes)) {
-    const depth = node.path.length === 0 ? 'entry' : `${node.path.length} click(s) deep`;
+    // A state seeded from the route map was not clicked into, and calling its
+    // address "one click deep" would erase the only interesting thing about it.
+    const seeded = node.path[0]?.kind === 'goto';
+    const clicks = node.path.length - (seeded ? 1 : 0);
+    const depth = node.path.length === 0
+      ? 'entry'
+      : seeded
+        ? clicks === 0 ? 'by address only' : `by address, then ${clicks} click(s)`
+        : `${node.path.length} click(s) deep`;
     // Several distinct states can share a route (a modal over a page). Show the
     // landmark that separates them so the list is not a row of identical paths.
     const shared = (routeCounts.get(node.fingerprint.route) ?? 0) > 1;
@@ -114,6 +122,69 @@ export function reportWalk(graph: UIGraph): string {
       c.dim(`  (${benign} are controls that were already active — a link to the`),
     );
     lines.push(c.dim('   current page, or the tab already selected)'));
+  }
+
+  // The static map beside what was walked. Its own section, never folded into
+  // Findings: a control the walk watched do nothing is a fact about the app,
+  // and a route the map declares is a claim by a file that may be older than
+  // the app. Printing them in one list would give the second the weight of the
+  // first.
+  const routes = graph.routes;
+  if (routes) {
+    lines.push('');
+    lines.push(c.bold('Declared routes'));
+    lines.push(
+      c.dim(`  ${routes.declared} browser route(s) declared in ${routes.origin}`) +
+        (routes.excluded > 0
+          ? c.dim(` (${routes.excluded} other door(s) there are not pages — APIs, CLIs, mobile screens)`)
+          : ''),
+    );
+    if (routes.declared === 0) {
+      lines.push(
+        c.dim('  Nothing to compare: that map names no address a browser can open.'),
+      );
+    } else if (routes.mapLooksUnrelated) {
+      // One sentence rather than a row per route. Every route unmatched is far
+      // better evidence that the map is about something else than that every
+      // page in the app is orphaned, and listing them would say the opposite.
+      lines.push(c.yellow('  This map matched nothing the walk reached.'));
+      lines.push(
+        c.dim('  It most likely describes different addresses than the browser sees — a'),
+      );
+      lines.push(
+        c.dim('  hash-routed app, a base path, or another repository. Nothing concluded.'),
+      );
+    } else {
+      const of = (status: string) => routes.checks.filter((ch) => ch.status === status);
+      const walked = of('walked').length;
+      if (walked > 0) lines.push(c.green(`  ${walked} reached by walking — map and app agree`));
+      for (const check of of('errored')) {
+        lines.push(`  ${c.red('ERROR')}     ${check.route}`);
+        lines.push(c.dim(`            it opened and errored — ${check.detail ?? ''}`));
+      }
+      for (const check of of('url-only')) {
+        lines.push(`  ${c.yellow('NO WAY IN')} ${check.route}`);
+        lines.push(c.dim(`            ${check.detail ?? ''}`));
+      }
+      for (const check of of('absent')) {
+        lines.push(`  ${c.yellow('NOT THERE')} ${check.route}`);
+        lines.push(c.dim(`            ${check.detail ?? ''}`));
+      }
+      const unchecked = of('unchecked');
+      if (unchecked.length > 0) {
+        lines.push(c.dim(`  ${unchecked.length} not opened — ${unchecked[0].detail ?? ''}`));
+      }
+      if (routes.undeclared.length > 0) {
+        lines.push(
+          c.dim(`  ${routes.undeclared.length} route(s) walked that the map never declared: `) +
+            c.dim(routes.undeclared.slice(0, 3).join(', ')),
+        );
+      }
+      lines.push(
+        c.dim('  A route map is a hint from the source, never ground truth. Where the two'),
+      );
+      lines.push(c.dim('  disagree, one of them is out of date and this run cannot say which.'));
+    }
   }
 
   // Coverage honesty: always state what was NOT covered, never imply totality.

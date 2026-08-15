@@ -13,6 +13,7 @@
 #   I  fields grouped by layout, where the app never wrote a form
 #   J  a control whose whole effect is geometric
 #   K  an app that marks the current item in CSS instead of ARIA
+#   L  the source's route map beside what the walk actually reached
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -514,6 +515,137 @@ node -e '
     fail("a genuinely dead button went unreported because it carried an active class");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and a dead button carrying the same class is still reported"
+
+echo "L: the source's route map beside what the walk actually reached"
+# The map is a hint and the app is the evidence, so every check here is about
+# keeping the two apart. A page the walk clicked its way to must stay silent; a
+# page only its address reaches is the finding; and the two ways a declared
+# address can fail — the app 500s, or the map is stale and it 404s — must never
+# come back as one sentence, because they send a reader to different files.
+start_fixture PORT="$PORT" ORPHAN=1
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --json --routes fixture/routes.json \
+  --out /tmp/clickgraph-routes.json >/tmp/clickgraph-routes-out.json 2>/dev/null
+check "$?" "0" "a walk given a route map still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-routes-out.json");
+  const g = require("/tmp/clickgraph-routes.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const r = v.routes;
+  if (!r) fail("the walk was given a route map and reported nothing about it");
+
+  // The orphan: declared, real, and nothing on the site links to it.
+  if (!r.urlOnly.some((c) => c.route === "/audit"))
+    fail("the page nothing links to was not reported as reachable only by address");
+  // Finding it is worth nothing if its controls are then left unwalked.
+  if (!Object.values(g.nodes).some((n) => n.fingerprint.route === "/audit"))
+    fail("/audit was named in the report and never added to the graph");
+  if (!v.findings.some((f) => /Export audit log/.test(f.control)))
+    fail("the dead control on the seeded page was never walked — seeding named a screen and opened nothing");
+
+  // The two failures that must stay apart.
+  if (!r.errored.some((c) => c.route === "/broken-export"))
+    fail("a declared route that 500s was not reported as an error");
+  if (r.absent.some((c) => c.route === "/broken-export"))
+    fail("an app that errors on a declared route was blamed on a stale map");
+  if (!r.absent.some((c) => c.route === "/legacy-reports"))
+    fail("a declared route that 404s was not reported as absent");
+  if (r.errored.some((c) => c.route === "/legacy-reports"))
+    fail("a stale map entry was reported as the app being broken");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "finds the page nothing links to, walks it, and keeps 500 apart from 404"
+
+node -e '
+  const v = require("/tmp/clickgraph-routes-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const r = v.routes;
+  const named = (list) => list.map((c) => c.route);
+  const reported = [...named(r.urlOnly), ...named(r.absent), ...named(r.errored)];
+
+  // Everything the walk reached by clicking has to stay silent. This is the
+  // half that regresses quietly: a matcher that stops matching turns every
+  // working page in the app into an accusation.
+  for (const route of ["/", "/orders", "/settings", "/about"])
+    if (reported.includes(route)) fail(`${route} is reachable by clicking and was reported anyway`);
+  // /orders/[id] is declared with a parameter and walked as /orders/:id. The
+  // two spellings are the same door, and only a normalized compare says so.
+  if (r.walked !== 5) fail(`expected 5 declared routes reached by walking, got ${r.walked}`);
+  // A route that takes an id cannot be opened without inventing one, and
+  // inventing one manufactures a 404 that reads as a missing page.
+  if (reported.includes("/invoices/:param"))
+    fail("a parameterized route was opened with a made-up value and called missing");
+  if (r.unchecked !== 1) fail(`expected 1 unopened route, got ${r.unchecked}`);
+  // The map failed to declare two pages the walk found. That is a fact about
+  // the map, and it must never be dressed up as a defect in the app.
+  if (!r.undeclared.includes("/signup")) fail("a route walked but never declared was not listed");
+  // The old address for the orphan still redirects to it. Following a redirect
+  // into a page nothing links to does not make it a page the walk reached.
+  const alias = r.urlOnly.find((c) => c.route === "/audit-log");
+  if (!alias) fail("an address redirecting onto an orphan was not reported as one too");
+  if (!/another declared address/.test(alias.detail ?? ""))
+    fail("the redirect was reported without saying where it landed");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "stays silent on every declared route the walk reached by clicking"
+
+node -e '
+  const g = require("/tmp/clickgraph-routes.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const node = Object.values(g.nodes).find((n) => n.fingerprint.route === "/audit");
+  if (!node) fail("/audit is not in the graph");
+  if (node.path[0]?.kind !== "goto")
+    fail("the seeded state records a click path it never had");
+  if (node.path[0].url !== "http://localhost:'"$PORT"'/audit")
+    fail(`the way back into the seeded state is wrong: ${node.path[0].url}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "records the address as the way back in, not a click path it never had"
+
+# App Atlas's own format. It maps every door a codebase opens, and only the ones
+# it marks PAGE are addresses a browser can land on — walking GET /api/ping would
+# prove nothing about a UI and calling it an orphaned page would be a lie.
+node dist/cli.js walk "$URL" --quiet --json --routes fixture/routes.atlas.json \
+  --out /tmp/clickgraph-atlas.json >/tmp/clickgraph-atlas-out.json 2>/dev/null
+check "$?" "0" "a walk reads an App Atlas atlas as a route map"
+node -e '
+  const v = require("/tmp/clickgraph-atlas-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const r = v.routes;
+  if (r.declared !== 3) fail(`expected 3 browser pages from the atlas, got ${r.declared}`);
+  const all = JSON.stringify(r);
+  if (all.includes("/api/ping")) fail("an API handler was treated as a page a browser can land on");
+  if (!r.urlOnly.some((c) => c.route === "/audit"))
+    fail("the orphan was not found through the atlas format");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "counts only the doors a browser can land on, not the API beside them"
+
+# The map that is simply about something else. Every route unmatched is far
+# better evidence that the map describes another addressing scheme — a
+# hash-routed app, a base path, another repo — than that every page in the app
+# is orphaned. Bounded hard: all this needs is a walk that reached something.
+printf '["/overview","/details","/inbox"]' >/tmp/clickgraph-unrelated.json
+node dist/cli.js walk "$URL" --quiet --json --routes /tmp/clickgraph-unrelated.json \
+  --max-actions 4 --out /tmp/clickgraph-unrel.json >/tmp/clickgraph-unrel-out.json 2>/dev/null
+check "$?" "0" "a walk against a map of another app still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-unrel-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (!v.routes.mapLooksUnrelated)
+    fail("a map that matched nothing was reported as an app with no reachable pages");
+  if (!/matched nothing/.test(v.verdict))
+    fail("the verdict sentence did not say the map was about something else");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "doubts the map rather than accusing every page in the app"
+node dist/cli.js show --out /tmp/clickgraph-unrel.json 2>/dev/null | grep -q 'NOT THERE'
+check "$?" "1" "and withholds the individual rows instead of listing false orphans"
+
+# Two refusals, for the same reason every other silent flag is refused: handing
+# back an unchecked run to someone who asked for the check is the failure that
+# does not announce itself.
+node dist/cli.js diff "$URL" --quiet --routes fixture/routes.json \
+  --out /tmp/clickgraph-routes.json >/dev/null 2>&1
+check "$?" "2" "refuses --routes on diff instead of ignoring it"
+node dist/cli.js walk "$URL" --quiet --routes fixture/no-such-map.json \
+  --out /tmp/clickgraph-nomap.json >/dev/null 2>&1
+check "$?" "2" "fails loudly when the route map is not there"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
