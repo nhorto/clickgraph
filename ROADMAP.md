@@ -161,11 +161,32 @@ change the app deliberately, and a walk is what they are checking.)
       linked screens make almost every exit a free ride; a 40-state SPA where
       the states share a URL gives a router much less to work with.
 
+- [x] **Timed, and the reload count was overselling it.** Reloads were measured
+      on App Atlas and seconds were not, which left the actual question open.
+      Two interleaved A/Bs, three pairs and two pairs, every run reproducing
+      itself within ~1%.
+
+      Held to the same 197 interactions, the replay takes 256.3s against the
+      walk's 289.9s: 12% off, where the fixture had shown 41%. Left to its own
+      budget it is 7% *slower* — 311.9s against 291.4s — because its floor is
+      the baseline's full edge count, which is larger than the walk's own
+      ceiling, so it buys 38% more coverage with the extra time. Both runs are
+      honest and they answer different questions; only the equal-work one
+      answers whether to reach for the fast path, and running just the first
+      would have argued the feature backwards.
+
+      What that changes downstream: 16% fewer reloads bought 12% of wall clock,
+      so reloads are no longer the dominant term and the item below can no
+      longer assume they are. Whatever is next has to be measured against
+      seconds, not against the reload count.
+
 - [ ] What is left of the reloads: 12 on the fixture, one per time the route
       strands itself in a finished state. Ordering states by what links them,
       rather than by path length, is the next cut. Walking several states at
       once in separate browser contexts is the other, and replay is what makes
-      it possible — the work list is known up front, so it shards.
+      it possible — the work list is known up front, so it shards. Both are now
+      worth less than the reload counts suggest — see the timing above — so
+      whichever is tried first should be timed before it is finished.
 - [x] **Measured and rejected: entering a state by navigating straight to its
       URL.** The intuition was that replaying a path costs a reload plus every
       click on the way in. Interleaved A/B on a real dashboard: 175.5s replay

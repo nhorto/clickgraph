@@ -69,15 +69,26 @@ skews the findings.
 How much that is worth depends on the app, and the fixture flatters it. Its
 eight screens are densely linked and three quarters of its controls navigate, so
 almost every exit is a free ride. App Atlas — 40 states, 2,086 controls, a React
-Flow SPA where most states share one URL — has far less for a router to exploit:
+Flow SPA where most states share one URL — has far less for a router to exploit.
+Held to the same 197 interactions, mean of two interleaved pairs:
 
-| | Interactions | Reloads | Reloads per action |
+| | Wall clock | Interactions | Reloads |
 |---|---|---|---|
-| Full walk | 197 | 191 | 0.97 |
-| `--replay` | 271 | 169 | 0.62 |
+| Full walk | 289.9s | 197 | 191 |
+| `--replay` | **256.3s** | 197 | 160 |
 
-A third off per action rather than three quarters, on a run that covers more
-ground. Worth having, and not the fixture's number.
+12% off, not the fixture's 41%. That is the number to quote.
+
+Measuring it took two experiments, and the first one alone would have been
+misleading in the opposite direction. Left to its own budget the replay is 7%
+*slower* — 311.9s against 291.4s — because its floor is the baseline's full edge
+count and that is larger than the walk's own ceiling, so it does 38% more work
+for its extra time. Neither run is wrong; they answer different questions, and
+only the equal-work one answers "should I reach for this".
+
+The other thing the timing settled: cutting reloads by 16% bought 12% of wall
+clock, so reloads are no longer the dominant term. Anything further has to come
+from somewhere else, which is not what the reload count alone implied.
 
 It buys that by covering less, and says which less. A replay reads the live page
 at each state it visits, so a control added to a screen the baseline knew is
