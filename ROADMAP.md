@@ -118,10 +118,54 @@ Deliberately split in two, because one half is much cheaper than the other:
       whole category — one weak signal is a guess, two independent weak signals
       agreeing is evidence.
 
+- [x] **A select whose only effect is its own value** (issue #5). A controlled
+      React `<select>` was reported NO EFFECT on every choice: React writes the
+      value as a property, so no attribute mutates and no text is rewritten, and
+      the closed control's new text is painted by the browser rather than held
+      in the DOM. There is nothing for a snapshot to compare.
+
+      The issue arrived with a suggested fix — treat "the value changed" as a
+      working control — and it is wrong in the way this category keeps being
+      wrong. The browser sets the value whether or not the app is listening, so
+      that rule is just as true of the fixture's region filter, which is a
+      planted defect. It would have silenced an existing check, which is how it
+      was caught: the cure and the disease are the same sentence.
+
+      The pairing that holds is a consumer. A select inside a form with a submit
+      has one by construction, so silence at selection time proves nothing and
+      the submit is where the proof lives; a select with nothing to submit it
+      has no later moment, so silence is the whole defect. `value-set` is its
+      own outcome and deliberately weaker than `state-changed` — the control
+      accepted the value, which is not the same as anything having read it.
+
+      The guard is the third case on the fixture screen, and it is the bug a
+      controlled select actually has: a handler that never commits means React
+      restores the old value, so the control cannot be changed at all. It sits
+      in the form like the working one, so form membership had to stay necessary
+      without becoming sufficient. The value is read back, and that also fixed a
+      report that lied — the finding used to say an option had been `set to` a
+      value the control had refused.
+
+- [x] **The same bug, hiding instead of accusing.** Chasing the above turned up
+      why `--fill-forms` skipped forms with required selects: it filled them by
+      asking for "an option this is not already showing", which is the right
+      question for testing a select and the wrong one for filling a form. A walk
+      does not reload between actions in one state, so a select still shows what
+      the previous action chose, and "something else" comes back around to the
+      empty placeholder — the one value that makes the form invalid. The submit
+      was then skipped as `needs-input` and never tested.
+
+      Worth its own entry because of how it presented. Every other item here is
+      a false finding, which is loud. This one produced a skip, and a skip reads
+      as the tool being careful. It affected every form with a required select
+      in every app, and it was found by following a different bug.
+
 - [ ] Keep walking new real apps; each one so far has found a false-positive
       class the fixture could not (see README). Five for five now, and the last
       two both arrived while dogfooding an unrelated change rather than from
-      going looking.
+      going looking. The sixth came from an issue rather than a walk, and its
+      suggested fix would have broken an existing check — a report of a false
+      positive is evidence that something is wrong, not a diagnosis.
 
 ## Phase 3 — a fast inner loop
 

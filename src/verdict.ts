@@ -196,7 +196,7 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
     )
     .map((e) => ({
       severity: e.outcome.kind === 'error' ? ('error' as const) : ('no-effect' as const),
-      control: actionLabel(e.action),
+      control: actionLabel(e.action, e.outcome),
       state: nodeLabel(graph, e.from),
       detail: e.outcome.note ?? '',
     }));

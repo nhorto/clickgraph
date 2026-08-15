@@ -647,6 +647,90 @@ node dist/cli.js walk "$URL" --quiet --routes fixture/no-such-map.json \
   --out /tmp/clickgraph-nomap.json >/dev/null 2>&1
 check "$?" "2" "fails loudly when the route map is not there"
 
+echo "M: selects whose only effect is their own value"
+# The hardest pairing in the fixture, because the two cases are identical in the
+# DOM. Choosing an option changes a property, and a property mutates no
+# attribute and rewrites no text — so "the value changed" is true of a select
+# wired to nothing just as much as of one that works, and any rule built on it
+# alone excuses the dead one. What separates them is whether a submit exists to
+# consume the value, and whether the control kept what it was given.
+start_fixture PORT="$PORT" VALUE=1
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-value.json \
+  >/tmp/clickgraph-value-out.json 2>/dev/null
+check "$?" "0" "a walk of the select screen still succeeds"
+
+node -e '
+  const v = require("/tmp/clickgraph-value-out.json");
+  const g = require("/tmp/clickgraph-value.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const delivery = g.edges.find((e) => /Delivery/.test(e.action.selector.label));
+  if (!delivery) fail("the delivery select was never walked");
+  if (delivery.outcome.kind !== "value-set")
+    fail(`a working controlled select was classified ${delivery.outcome.kind}, not value-set`);
+  if (!delivery.outcome.benign) fail("value-set was not treated as benign");
+  if (v.findings.some((f) => /Delivery/.test(f.control)))
+    fail("a select whose value a submit consumes was reported as a dead control");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a select with a submit to consume it is not called dead"
+
+node -e '
+  const v = require("/tmp/clickgraph-value-out.json");
+  const g = require("/tmp/clickgraph-value.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const theme = g.edges.find((e) => /Theme/.test(e.action.selector.label));
+  if (!theme) fail("the theme select was never walked");
+  if (theme.outcome.benign)
+    fail("a select with nothing to submit it excused itself — form membership is being ignored");
+  if (!v.findings.some((f) => /Theme/.test(f.control)))
+    fail("a dead select outside any form went unreported");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and one with nothing to consume it is still reported"
+
+# The guard on the rule above. This select is inside the form too, so being in a
+# form must not be enough on its own — it has to have kept the value as well.
+node -e '
+  const v = require("/tmp/clickgraph-value-out.json");
+  const g = require("/tmp/clickgraph-value.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const wrap = g.edges.find((e) => /Gift wrap/.test(e.action.selector.label));
+  if (!wrap) fail("the gift wrap select was never walked");
+  if (wrap.outcome.benign)
+    fail("a select that refused its option excused itself by sitting in a form");
+  if (!wrap.outcome.valueRefused)
+    fail("the refusal was not recorded, so the report describes a change that never happened");
+  if (!v.findings.some((f) => /Gift wrap/.test(f.control)))
+    fail("a controlled select that cannot be changed went unreported");
+  if (!v.findings.some((f) => /Gift wrap/.test(f.control) && /asked for/.test(f.control)))
+    fail("the label still claims the option was set when the select refused it");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a select in a form that refuses its option is still reported"
+
+# The half of the bug that hides rather than accuses. A walk does not reload
+# between actions in one state, so a select still shows what the previous action
+# chose — and "an option it is not already showing" comes back around to the
+# empty placeholder, which is the one value that makes the form invalid. The
+# submit was then skipped as needs-input and never tested at all.
+node dist/cli.js walk "$URL" --fill-forms --quiet --json \
+  --out /tmp/clickgraph-value-fill.json >/tmp/clickgraph-value-fill-out.json 2>/dev/null
+check "$?" "0" "a walk that fills the select form still succeeds"
+node -e '
+  const g = require("/tmp/clickgraph-value-fill.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const skipped = g.coverage.skipped.filter((s) => /Save options/.test(s.label ?? ""));
+  if (skipped.length > 0)
+    fail(`the submit was skipped rather than tested: ${skipped[0].detail}`);
+  const submit = g.edges.find((e) => /Save options/.test(e.action.selector.label));
+  if (!submit) fail("the submit was never exercised");
+  if (submit.outcome.kind === "no-effect")
+    fail("the form was submitted but reported as doing nothing");
+  const chose = (submit.action.fill ?? []).find((f) => /Delivery/.test(f.label));
+  if (!chose) fail("the required select was not filled at all");
+  if (!chose.value || /Pick a speed/.test(chose.value))
+    fail(`form fill chose the placeholder (${chose.value}), which is what made it invalid`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "fills a required select with a real value, so the submit is tested"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]

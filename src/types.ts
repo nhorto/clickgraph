@@ -122,6 +122,20 @@ export type OutcomeKind =
    * reads is different — and rolling it in would overstate the evidence.
    */
   | 'visual-only'
+  /**
+   * A select took the option it was given, and nothing else about the page
+   * changed — because the only thing it changed is its own value, and a value
+   * is a property. No attribute mutates, no text is rewritten, and the closed
+   * control's new text is painted by the browser from the property rather than
+   * from the DOM. A snapshot cannot see any of it.
+   *
+   * Its own kind, and deliberately weaker than `state-changed`: what is known
+   * is that the control accepted the value, not that anything consumed it. The
+   * evidence that it *was* consumed is a submit, and a submit is a different
+   * action — which is why this is never claimed for a control with nothing to
+   * submit it. See `classifyOutcome`.
+   */
+  | 'value-set'
   | 'no-effect'
   | 'error';
 
@@ -144,6 +158,13 @@ export interface Outcome {
    * page you are already on. Recorded in the graph, kept out of findings.
    */
   benign?: boolean;
+  /**
+   * A select was given an option and is not showing it. Carried as a fact
+   * rather than left to be read back out of `note`, because the label that
+   * describes the action depends on it and matching on prose would break the
+   * moment the sentence is reworded.
+   */
+  valueRefused?: boolean;
 }
 
 /**

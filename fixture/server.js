@@ -44,6 +44,29 @@
  * be inferred and guessing it would mean typing into fields that do not belong
  * together.
  *
+ * Run with VALUE=1 to add /order-options and its three selects, which are the
+ * same control from the outside: each takes an option and leaves the page
+ * reading exactly as it did, because the only thing a select changes is its own
+ * value, and a value is a property rather than an attribute or a word of text.
+ * "The value changed" therefore cannot be the signal — it is true of the broken
+ * ones too. Only one of the three is working:
+ *
+ *   - Delivery sits in a form whose submit reads it. A consumer exists, so its
+ *     silence at selection time proves nothing either way, and the submit is
+ *     where the proof lives. Must not be reported.
+ *   - Gift wrap sits in the same form and refuses the option: its handler never
+ *     commits, so the value snaps back, which is what React does to a controlled
+ *     select whose onChange does not set state. Being in a form must stay
+ *     necessary without becoming sufficient, or the excuse above swallows this.
+ *     Must still be reported.
+ *   - Theme sits alone with no form and no handler. An immediate effect is the
+ *     only effect it could ever have, so silence is the whole defect. Must still
+ *     be reported.
+ *
+ * The form's required select also carries an empty placeholder, which is what
+ * exposed --fill-forms filling it with the one value that makes the form
+ * invalid.
+ *
  * Run with ORPHAN=1 to add /audit — a real, working screen that nothing on the
  * site links to. It is reachable only by typing its address, which is exactly
  * what fixture/routes.json declares and what a walk on its own can never find.
@@ -71,6 +94,7 @@ const CLUSTER = process.env.CLUSTER === '1';
 const CANVAS = process.env.CANVAS === '1';
 const CRUMB = process.env.CRUMB === '1';
 const ORPHAN = process.env.ORPHAN === '1';
+const VALUE = process.env.VALUE === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -181,6 +205,7 @@ const routes = {
     ${CLUSTER ? `<p><a href="/invite" data-testid="invite-link">Invite a teammate</a></p>` : ''}
     ${CANVAS ? `<p><a href="/canvas" data-testid="canvas-link">Canvas</a></p>` : ''}
     ${CRUMB ? `<p><a href="/reports/q3-report" data-testid="q3-link">Q3 report</a></p>` : ''}
+    ${VALUE ? `<p><a href="/order-options" data-testid="options-link">Order options</a></p>` : ''}
     <script>
       document.getElementById('save').addEventListener('click', async () => {
         await fetch('/api/save', { method: 'POST' });
@@ -329,6 +354,84 @@ const routes = {
       }
     : {}),
 
+  // Only linked when VALUE=1. Two selects whose choice changes nothing a
+  // snapshot can see, because the only thing either one changes is its own
+  // value — and a value lives in a property, which mutates no attribute and
+  // rewrites no text.
+  //
+  // They are the same select from the outside. Both take the option. Both leave
+  // the page reading exactly as it did. The DOM cannot tell them apart, which is
+  // why the choice of signal matters: "the value changed" is true of both, so a
+  // rule built on it would excuse the broken one along with the working one.
+  //
+  // What separates them is whether anything exists to consume the value.
+  // "Delivery" sits in a form with a submit that reads it, so its silence at
+  // selection time proves nothing — the submit is what would prove it either
+  // way. "Theme" sits alone with no form, no submit and no handler: an immediate
+  // effect is the only effect it could ever have, so silence is the whole defect.
+  ...(VALUE
+    ? {
+        '/order-options': page('Order options', `
+    <h1>Order options</h1>
+
+    <form id="delivery-form" method="post" action="/api/order-options">
+      <p><label>Delivery
+        <select id="delivery" name="delivery" data-testid="delivery" required>
+          <option value="">Pick a speed…</option>
+          <option value="standard">Standard</option>
+          <option value="express">Express</option>
+        </select>
+      </label></p>
+      <p><label>Gift wrap
+        <select id="giftwrap" name="giftwrap" data-testid="giftwrap">
+          <option value="none">No wrapping</option>
+          <option value="paper">Gift paper</option>
+        </select>
+      </label></p>
+      <p><button type="submit" data-testid="save-options">Save options</button></p>
+    </form>
+
+    <p><label>Theme
+      <select id="theme" data-testid="theme" aria-label="Theme">
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label></p>
+    <script>
+      // Controlled the way React controls a select: the value is written as a
+      // property from state, never as an attribute, and no option's "selected"
+      // attribute is ever touched. This is the shape that reads as dead.
+      var delivery = '';
+      var deliverySelect = document.getElementById('delivery');
+      deliverySelect.addEventListener('change', function (e) {
+        delivery = e.target.value;
+        render();
+      });
+      function render() {
+        deliverySelect.value = delivery;
+      }
+
+      // The bug a controlled select actually has, and the guard on the rule
+      // above: this one is controlled by state that its handler never updates,
+      // so the value snaps back to what state still says. React does this to
+      // itself — it restores the controlled value when onChange does not commit
+      // one — and the result is a select that cannot be changed at all.
+      //
+      // It is inside the form, so "it has a submit to consume it" excuses it.
+      // Being in a form has to stay necessary and not become sufficient, or the
+      // cure for the false positive above swallows this.
+      var giftwrapCommitted = 'none';
+      var giftwrapSelect = document.getElementById('giftwrap');
+      giftwrapSelect.addEventListener('change', function (e) {
+        e.target.value = giftwrapCommitted;
+      });
+
+      // "Theme" is wired to nothing at all, on a page where another select is
+      // just as silent and is working. It has to still be reported.
+    </script>`),
+      }
+    : {}),
+
   // No link anywhere on the site points here. That is the whole point: the page
   // works, and a walk that only clicks can never arrive. Its two buttons are
   // there so that finding the screen is worth something — a screen named in a
@@ -369,6 +472,13 @@ createServer((req, res) => {
     return res.end('{"orders":[{"id":1042}]}');
   }
   if (path === '/api/signup') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end('{"ok":true}');
+  }
+  // The consumer that makes "Delivery" a working control rather than a dead
+  // one. It reads the value; nothing about choosing an option reaches it until
+  // the form is submitted, which is exactly why selection time proves nothing.
+  if (path === '/api/order-options') {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end('{"ok":true}');
   }

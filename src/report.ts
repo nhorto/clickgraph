@@ -15,6 +15,7 @@ const OUTCOME_LABEL: Record<OutcomeKind, string> = {
   'state-changed': 'changed state',
   'network-only': 'network only',
   'visual-only': 'moved the view only',
+  'value-set': 'took the value',
   'no-effect': 'NO EFFECT',
   error: 'ERROR',
 };
@@ -105,7 +106,7 @@ export function reportWalk(graph: UIGraph): string {
     lines.push(c.bold('Findings'));
     for (const edge of problems) {
       const tag = edge.outcome.kind === 'error' ? c.red('ERROR') : c.yellow('NO EFFECT');
-      lines.push(`  ${tag}  ${actionLabel(edge.action)}`);
+      lines.push(`  ${tag}  ${actionLabel(edge.action, edge.outcome)}`);
       lines.push(
         c.dim(`         on ${nodeLabel(graph, edge.from)} — ${edge.outcome.note ?? ''}`),
       );

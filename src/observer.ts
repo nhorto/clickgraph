@@ -514,6 +514,12 @@ export function classifyOutcome(
   watch: { network: NetworkCall[]; consoleErrors: string[]; httpErrors: string[] },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
+  /**
+   * For a select, what became of the option it was given. Supplied by the
+   * caller because both halves need the live page and the control's siblings,
+   * neither of which a snapshot comparison has.
+   */
+  selection?: { held: boolean; consumable: boolean },
 ): Outcome {
   const base: Omit<Outcome, 'kind'> = {
     urlBefore: before.url,
@@ -583,6 +589,52 @@ export function classifyOutcome(
       ...base,
       kind: 'network-only',
       note: 'fired a request but the visible state did not change',
+    };
+  }
+
+  // A select whose whole effect is its own value.
+  //
+  // Both halves are required, and the second is the one doing the work. "The
+  // value changed" is true of every select that is not actively broken —
+  // including one wired to nothing at all, because the browser sets the value
+  // whether or not the app is listening. On its own it would excuse the dead
+  // filter select along with the working one, which is the false positive this
+  // fix exists to remove, run in reverse.
+  //
+  // What separates them is whether anything exists to consume the value. A
+  // select inside a form with a submit has a consumer by construction, and the
+  // submit is where the proof lives — so silence at selection time is not
+  // evidence of anything, and reporting it accuses a working control. A select
+  // with nothing to submit it has no later moment to be proven in: an immediate
+  // effect is the only effect it could ever have, and its silence is the whole
+  // defect.
+  //
+  // `held` is the guard on that reasoning. A controlled select whose handler
+  // never commits the value snaps back to what state still says — React does
+  // this to itself — and the result is a select that cannot be changed at all.
+  // It sits in a form like the working one, so membership alone would excuse
+  // it. Being in a form has to stay necessary without becoming sufficient.
+  if (selection?.held && selection.consumable) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'value-set',
+      benign: true,
+      note: 'took the option; a submit is what would prove anything reads it',
+    };
+  }
+
+  // Still a finding, but not the one the generic sentence would tell. The walker
+  // asked for an option and the control is not showing it, so "no navigation, no
+  // state change" understates it: nothing changed because the change itself was
+  // refused, and the edge would otherwise record an option that was never taken.
+  if (selection && !selection.held) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'no-effect',
+      valueRefused: true,
+      note: 'the select refused the option — it still shows what it showed before',
     };
   }
 

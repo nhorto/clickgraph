@@ -203,12 +203,75 @@ async function pickOption(page: Page, selector: Selector): Promise<OptionChoice 
 }
 
 /**
+ * Choose an option to *submit a form with*, which is a different question.
+ *
+ * `pickOption` above answers "what would prove this select responds", and its
+ * answer is an option the control is not already showing. That is the wrong
+ * answer here, in the one case that matters most: a required select sitting on
+ * a `<option value="">Pick one…</option>` placeholder. Whichever option the
+ * walk left showing, "something else" eventually comes back around to the
+ * placeholder — and the placeholder is the single value that makes the form
+ * invalid, so the submit is skipped as `needs-input` and the button behind it
+ * never gets tested at all.
+ *
+ * It is reachable because a walk does not reload between actions in one state,
+ * so a select still shows whatever the previous action chose. Every form with a
+ * required select in every app is affected, and the symptom is silence rather
+ * than a wrong finding, which is why it went unnoticed.
+ *
+ * So: prefer a real value over an empty one, and only fall back to an empty
+ * value when the control offers nothing else. Being different from what is
+ * showing does not matter — the submit is what is under test, not the select.
+ */
+async function pickFillOption(page: Page, selector: Selector): Promise<OptionChoice | null> {
+  try {
+    return await resolve(page, selector).evaluate((el: any) => {
+      const options = (Array.from(el.options ?? []) as any[]).filter((o) => !o.disabled);
+      if (options.length === 0) return null;
+      const next = options.find((o) => o.value !== '') ?? options[0];
+      return { value: next.value, label: (next.label || next.value || '').trim() };
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Will this form submit as it stands, or will the browser refuse it?
  *
  * `checkValidity` is the browser's own answer, which beats reading the markup
  * and guessing. An unknown answer counts as "it will submit", so this can only
  * ever hold back a click, never invent a reason to make one.
  */
+/**
+ * Did the select keep the option it was just given?
+ *
+ * Asked of the live element rather than of a snapshot, because a value lives in
+ * a property: nothing about it appears in an attribute, in the page's text, or
+ * in the `selected` attributes of the options, so there is nothing for a DOM
+ * comparison to notice.
+ *
+ * A select that answers "no" here has refused the change, which is the shape of
+ * a controlled component whose handler never commits one — React restores the
+ * old value when onChange does not set state, and the control cannot be changed
+ * at all. That is a real defect and the walker used to report the option as
+ * chosen regardless, describing a change that never happened.
+ *
+ * Unreadable counts as "no". The excuse this feeds requires positive evidence
+ * that the value took, and a question that could not be asked has not answered
+ * it.
+ */
+async function selectionHeld(page: Page, selector: Selector, wanted: string): Promise<boolean> {
+  try {
+    return await resolve(page, selector).evaluate(
+      (el: any, want: string) => el.value === want,
+      wanted,
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function formWillSubmit(page: Page, selector: Selector): Promise<boolean> {
   try {
     return await resolve(page, selector).evaluate((el: any) => {
@@ -479,8 +542,8 @@ export async function attempt(
         const fieldAt = await locate(page, field);
         if (!fieldAt) throw new Error('field not found');
         if (field.tag === 'select') {
-          const opt = await pickOption(page, fieldAt);
-          if (!opt) continue; // nothing else to choose; leave it as it stands
+          const opt = await pickFillOption(page, fieldAt);
+          if (!opt) continue; // nothing to choose; leave it as it stands
           await resolve(page, fieldAt).selectOption(opt.value, { timeout: ACTION_TIMEOUT });
           filled.push({ label: field.selector.label, value: opt.label });
         } else {
@@ -575,8 +638,25 @@ export async function attempt(
     };
   }
 
+  // Asked before the state is captured, while the browser is still sitting on
+  // the page the selection happened on.
+  //
+  // `consumable` is the second, independent half: something in the same form
+  // that will submit it. Read from the siblings rather than from the select,
+  // because a field never carries `formSubmit` itself — the control that submits
+  // does. A form with no submit control in it is a form nothing can send, so
+  // there is no later moment where the value could be proven to matter.
+  const selection = choice
+    ? {
+        held: await selectionHeld(page, target, choice.value),
+        consumable:
+          el.formId !== null &&
+          siblings.some((f) => f.formId === el.formId && f.formSubmit && !f.disabled),
+      }
+    : undefined;
+
   let after = await captureState(page);
-  let outcome = classifyOutcome(at, after, observed, el);
+  let outcome = classifyOutcome(at, after, observed, el, selection);
 
   // A control that looks hover-driven and did nothing when clicked has not been
   // tested yet — it has been tested the wrong way. Try hovering before calling

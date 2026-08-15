@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Action, Change, GraphDiff, UIEdge, UIGraph, OutcomeKind } from './types.js';
+import type { Action, Change, GraphDiff, Outcome, UIEdge, UIGraph, OutcomeKind } from './types.js';
 import { normalizeText } from './fingerprint.js';
 
 export const DEFAULT_GRAPH_PATH = '.uigraph/graph.json';
@@ -34,7 +34,13 @@ function edgeKey(edge: UIEdge): string {
   return controlKey(edge.from, edge.action.role, edge.action.name);
 }
 
-const WORKING: OutcomeKind[] = ['navigated', 'state-changed', 'network-only', 'visual-only'];
+// `value-set` belongs here, weak as it is. A select that took its option and
+// then stops taking it is a regression — that is precisely the controlled-select
+// break — and leaving it out would let a control degrade from working to refusing
+// without the diff calling it anything.
+const WORKING: OutcomeKind[] = [
+  'navigated', 'state-changed', 'network-only', 'visual-only', 'value-set',
+];
 const BROKEN_KINDS: OutcomeKind[] = ['no-effect', 'error'];
 
 /** Benign outcomes are expected behavior and must never read as a defect. */
@@ -65,18 +71,24 @@ export function nodeLabel(graph: UIGraph, nodeId: string): string {
  * thing if the form behind it was filled in and quite another if it was not, and
  * the label is the only place a reader finds out which.
  */
-export function actionLabel(action: Action): string {
+export function actionLabel(action: Action, outcome?: Outcome): string {
   if (action.kind === 'fill') {
     return `${action.selector.label} (form filled: ${action.fill?.length ?? 0} field(s))`;
   }
   if (action.kind === 'select' && action.value) {
-    return `${action.selector.label} set to "${action.value}"`;
+    // The option was asked for, not necessarily taken. Saying "set to" of a
+    // select that snapped back is this function's own warning coming true: the
+    // label would report a change that never happened, and a reader comparing
+    // two runs would be comparing a description of the request against a
+    // description of the result.
+    const verb = outcome?.valueRefused ? 'asked for' : 'set to';
+    return `${action.selector.label} ${verb} "${action.value}"`;
   }
   return action.selector.label;
 }
 
 function describe(edge: UIEdge, graph: UIGraph): string {
-  return `${actionLabel(edge.action)} on ${nodeLabel(graph, edge.from)}`;
+  return `${actionLabel(edge.action, edge.outcome)} on ${nodeLabel(graph, edge.from)}`;
 }
 
 /**
