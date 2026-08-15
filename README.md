@@ -213,14 +213,14 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through nine scenarios — unchanged (twice, for
+Runs the fixture app through ten scenarios — unchanged (twice, for
 determinism), a broken interaction, a new feature with one dead control, the
 JSON verdict agreeing with the exit code, an app behind a login screen, a form
 that drops its submission beside one that works, `--replay` finding all of the
 above while naming the screen it declined to open, a budget-limited baseline
 that must not invent regressions, and a screen with no `<form>` on it whose
-fields have to be grouped by layout or left alone. 53 checks, all passing as of
-the last commit.
+fields have to be grouped by layout or left alone, and a working zoom beside a
+dead button on the same canvas. 56 checks, all passing as of the last commit.
 
 ## Tested against real apps
 
@@ -230,10 +230,16 @@ Walked three real codebases, which found bugs the fixture never could. Current r
 |---|---|---|---|---|
 | Vite dashboard | React + Tailwind SPA | 32 | 90 (budget) | 0 |
 | Marketing site | Next.js App Router | 12 | 82 | 0 |
-| App Atlas web | React + React Flow SPA | 40 (budget) | 83 | 0 |
+| App Atlas web | React + React Flow SPA | 40 (budget) | 197 | 1 |
 
 Runs that stop at a budget say so and report what they never reached, rather
 than implying they covered everything.
+
+The App Atlas row was stale and said 83 walked and 0 findings; the selector and
+`inert` fixes had more than doubled what that walk reaches since it was written.
+Of the four findings a current run reports, three were the canvas zoom controls
+below — working buttons the fingerprint could not see, now `visual-only`. The
+fourth is a real unexplained no-effect and is left standing as one.
 
 Every false positive those runs exposed is now fixed, and each fix is a rule worth keeping:
 
@@ -247,6 +253,7 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **A control hidden from the accessibility tree is hidden from the walk.** An open dialog left the whole page behind it enumerated as clickable, so every one of those controls came back covered by the dialog's own backdrop. `aria-hidden` and `inert` are how an app says that; respecting them took the same dashboard from 24 states to 32.
 - **An empty form's submit button is not a dead control.** Clicking it fires native validation, which refuses the submission and changes no DOM — indistinguishable from a button wired to nothing. The browser's own `checkValidity` settles it, and the form is reported as skipped until something fills it in.
 - **Most apps do not write the form down, and the same rule still has to hold.** The React pattern is loose inputs and a button bound to a handler, with no `<form>` anywhere — and every one of those buttons declines an empty submit in silence, which is the case above with the browser's answer taken away. Nothing in that DOM says which fields belong to which button, so the grouping is inferred from layout: a field joins a cluster only when exactly one button is in reach of it, and stays skipped when two are, because guessing wrong means typing into fields that do not belong together. What the inference buys is that `--fill-forms` reaches these at all; what it must never do is manufacture a group to type into. Both halves are checked, since a rule that only ever refuses is indistinguishable from a rule that does nothing.
+- **A control whose whole effect is geometric is invisible to a fingerprint made of words.** App Atlas's React Flow canvas has Zoom In, Zoom Out and Fit View on it, and all three were reported dead. They work: each rewrites one CSS transform on the viewport — `scale(0.34)` to `scale(0.408)` and back, `scale(0.1)` for fit — and moves not a word of text and not one control, which is everything the fingerprint is made of. Those are now their own outcome, `visual-only`, rather than a `state-changed`: what is known is that the geometry moved, not that anything a user reads is different, and rolling it into the stronger kind would overstate the evidence. The risk in fixing this was always the opposite mistake, so the signal is kept deliberately narrow — scroll position and *inline* transforms, which is how JS-driven pan and zoom is actually written, and pointedly not element rectangles, which move for late layout and unfinished animations and would hide a genuinely dead control behind "something moved". Scroll position has the same shape and is carried the same way. The check also sits *below* the content comparison, so a click that changes what the page says is still a state change whether or not it also moved something. The fixture puts a dead button on the same screen as a working zoom, because the question worth testing is not whether a zoom can be detected but whether detecting it excuses the button next to it.
 - **A control a run never reached is not a control that is gone.** App Atlas has 2,086 controls and the default budget walks 200 of them. The baseline sampled one tenth; `--replay`, which reorders traversal by design, sampled a different tenth; and the diff reported the difference between two samples as 87 controls gone and 10 broken on arrival. The app had not changed. Absence from a graph means either "not there" or "never got to it", and a budget is exactly the condition that makes the second common — so where a run stopped short of a screen, the missing controls are now reported as the coverage gap they are. The measured scope, because the guess was wrong: two full walks over the same truncated app came back clean, 0 regressions, on the code that produced the 97. Deterministic traversal samples identically, so a plain `diff` does not trip this on its own — it took reordering to expose it. Whether a change that shifts where the budget falls could trip it too is untested, and the fix covers both because the reasoning does not depend on which run did the reordering.
 
 ## Layout

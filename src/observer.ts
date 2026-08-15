@@ -12,6 +12,12 @@ export interface PageSnapshot {
   fingerprint: ReturnType<typeof computeFingerprint>;
   /** Hash of visible text. Only ever used to detect whether an action did anything. */
   contentHash: string;
+  /**
+   * Hash of scroll position and inline transforms — what moved without the page
+   * reading differently. Same purpose as `contentHash`, and same restriction:
+   * only ever used to decide whether an action did anything.
+   */
+  geometryHash: string;
 }
 
 /**
@@ -335,7 +341,32 @@ function extractPageData() {
   // something, and calling that control dead is the costlier mistake.
   const text = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
 
-  return { title: document.title, headings, elements, text };
+  // What a click can change without changing a word on the page.
+  //
+  // A canvas that pans or zooms rewrites one CSS transform and nothing else: no
+  // text enters or leaves the page and no control appears or disappears, so a
+  // fingerprint built from text and controls sees an identical page and the
+  // button that moved it reads as dead. Three working buttons on App Atlas's
+  // React Flow graph — Zoom In, Zoom Out, Fit View — were reported exactly that
+  // way, and confirmed working by hand.
+  //
+  // Deliberately narrow, in both directions. Reading computed styles for every
+  // element would cost a full style resolution on every snapshot; inline
+  // transforms are how JS-driven pan and zoom is actually implemented (React
+  // Flow, d3-zoom, and the libraries built on them assign style.transform
+  // directly), and an attribute selector finds them without touching the style
+  // engine. Element rectangles are deliberately *not* included: they move for
+  // reasons that have nothing to do with the click — late layout, an animation
+  // that outlasts the settle — and every one of those would hide a genuinely
+  // dead control behind a "something moved".
+  const geometry = [
+    `scroll:${Math.round(window.scrollX)},${Math.round(window.scrollY)}`,
+    ...Array.from(document.querySelectorAll('[style*="transform"]'))
+      .slice(0, 200)
+      .map((el: any, i: number) => `${i}:${el.style?.transform ?? ''}`),
+  ].join('|');
+
+  return { title: document.title, headings, elements, text, geometry };
 }
 /* c8 ignore stop */
 
@@ -352,6 +383,7 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
     fingerprint,
     nodeId: nodeId(fingerprint),
     contentHash: createHash('sha256').update(data.text).digest('hex').slice(0, 12),
+    geometryHash: createHash('sha256').update(data.geometry).digest('hex').slice(0, 12),
   };
 }
 
@@ -478,6 +510,19 @@ export function classifyOutcome(
     before.contentHash !== after.contentHash
   ) {
     return { ...base, ...handled, kind: 'state-changed' };
+  }
+
+  // Nothing the page says changed, but something about where it sits did. Below
+  // the content check on purpose: a click that changes what the page reads is a
+  // state change whether or not it also moved something, and this must never be
+  // the answer where the stronger one applies.
+  if (before.geometryHash !== after.geometryHash) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'visual-only',
+      note: 'the view moved — scrolled, panned or zoomed — with no change to content',
+    };
   }
 
   // A request failed and the user saw nothing happen. That silent failure is a

@@ -95,6 +95,13 @@ export type OutcomeKind =
   | 'navigated'
   | 'state-changed'
   | 'network-only'
+  /**
+   * The page moved without changing: a canvas panned or zoomed, the view
+   * scrolled. Its own kind rather than a `state-changed`, because what is known
+   * about it is weaker — that the geometry moved, not that anything the user
+   * reads is different — and rolling it in would overstate the evidence.
+   */
+  | 'visual-only'
   | 'no-effect'
   | 'error';
 

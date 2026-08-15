@@ -82,8 +82,28 @@ Deliberately split in two, because one half is much cheaper than the other:
       reason rather than called dead, and `--fill-forms` fills the inferred
       cluster and proves its button really works — while the field beside two
       buttons is still never typed into.
+- [x] **A control whose whole effect is geometric.** Dogfooding the cluster work
+      turned this up without going looking for it: App Atlas's React Flow canvas
+      reported Zoom In, Zoom Out and Fit View as dead controls. All three work.
+      Each rewrites one CSS transform on the viewport and moves not a word of
+      text and not one control — which is everything the fingerprint is built
+      from — so the tool's central finding, `no-effect`, was being produced by
+      the tool's own blind spot.
+
+      It gets its own outcome kind rather than being folded into
+      `state-changed`, because what is known about it is weaker: the geometry
+      moved, not the content. The hard part was scope, since the obvious fix
+      trades this false positive for its opposite — a signal broad enough to
+      catch any movement would let a genuinely dead button hide behind an
+      unfinished animation. So it watches scroll position and *inline*
+      transforms, which is how JS-driven pan and zoom is actually implemented,
+      and specifically not element rectangles. The fixture screen puts a dead
+      button beside the working zoom, because that is the half that can regress
+      quietly.
+
 - [ ] Keep walking new real apps; each one so far has found a false-positive
-      class the fixture could not (see README).
+      class the fixture could not (see README). Four for four now, and the last
+      one arrived while dogfooding an unrelated change.
 
 ## Phase 3 — a fast inner loop
 

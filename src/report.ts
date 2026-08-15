@@ -14,6 +14,7 @@ const OUTCOME_LABEL: Record<OutcomeKind, string> = {
   navigated: 'navigated',
   'state-changed': 'changed state',
   'network-only': 'network only',
+  'visual-only': 'moved the view only',
   'no-effect': 'NO EFFECT',
   error: 'ERROR',
 };

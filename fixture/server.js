@@ -24,6 +24,12 @@
  * be checked against the case it used to get wrong: without a session it walks
  * the login form and reports a clean run of a page nobody cares about.
  *
+ * Run with CANVAS=1 to add /canvas, where a button's whole effect is geometric:
+ * it rewrites a CSS transform and changes not a word on the page. Beside it sits
+ * a button wired to nothing, because the interesting question is not whether a
+ * zoom can be detected but whether detecting it excuses the dead control next to
+ * it.
+ *
  * Run with CLUSTER=1 to add /invite, a screen with no <form> on it at all: two
  * loose inputs and a button wired by hand, which is how most React apps write a
  * form. Clicking that button with the fields empty changes nothing, exactly as a
@@ -47,6 +53,7 @@ const BREAK = process.env.BREAK === '1';
 const AUTH = process.env.AUTH === '1';
 const ROUTE = process.env.ROUTE === '1';
 const CLUSTER = process.env.CLUSTER === '1';
+const CANVAS = process.env.CANVAS === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -155,6 +162,7 @@ const routes = {
     <button id="delete-account">Delete account</button>
     <p><a href="https://example.com/docs">Read the docs</a></p>
     ${CLUSTER ? `<p><a href="/invite" data-testid="invite-link">Invite a teammate</a></p>` : ''}
+    ${CANVAS ? `<p><a href="/canvas" data-testid="canvas-link">Canvas</a></p>` : ''}
     <script>
       document.getElementById('save').addEventListener('click', async () => {
         await fetch('/api/save', { method: 'POST' });
@@ -248,6 +256,31 @@ const routes = {
         document.getElementById('note').value = '';
         document.getElementById('note-result').textContent = 'Cleared';
       });
+    </script>`),
+      }
+    : {}),
+
+  // Only linked when CANVAS=1. Two buttons over one diagram: one moves it and
+  // changes not a word on the page, one is wired to nothing. Telling those apart
+  // is the whole point — a signal that says "something moved" would excuse both.
+  ...(CANVAS
+    ? {
+        '/canvas': page('Canvas', `
+    <h1>Canvas</h1>
+    <div id="viewport" style="transform: scale(1); width: 220px; height: 90px; border: 1px solid #333">
+      <p>A diagram lives here.</p>
+    </div>
+    <button id="zoom-in" data-testid="zoom-in">Zoom in</button>
+    <button id="recenter" data-testid="recenter">Recenter</button>
+    <script>
+      // Works, and leaves the page reading exactly as it did.
+      document.getElementById('zoom-in').addEventListener('click', () => {
+        const vp = document.getElementById('viewport');
+        const now = parseFloat((vp.style.transform.match(/scale\\(([\\d.]+)\\)/) || [])[1] || '1');
+        vp.style.transform = 'scale(' + (now + 0.25) + ')';
+      });
+      // "Recenter" is wired to nothing at all, on a page where something else
+      // does move. It has to still be reported.
     </script>`),
       }
     : {}),

@@ -11,6 +11,7 @@
 #   G  --replay finds what a full diff finds, and says what it did not open
 #   H  a baseline that ran out of budget does not invent regressions
 #   I  fields grouped by layout, where the app never wrote a form
+#   J  a control whose whole effect is geometric
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -28,11 +29,31 @@ pass=0; fail=0
 cleanup() { pkill -f "[n]ode fixture/server.js" 2>/dev/null; }
 trap cleanup EXIT
 
+# Wait for the fixture to actually answer, rather than sleeping and hoping.
+#
+# A fixed sleep fails in two directions and both look like the tool is broken.
+# Too short under load and the walk gets ERR_CONNECTION_REFUSED, which is
+# reported as the scenario failing rather than as never having run. And the old
+# server has to be gone before the new one binds, or the new one dies of
+# EADDRINUSE and every assertion in the scenario is silently made against the
+# previous scenario's app — passing or failing for reasons that have nothing to
+# do with what is being tested.
 start_fixture() {
-  cleanup; sleep 0.5
+  cleanup
+  for _ in $(seq 1 40); do
+    curl -s -o /dev/null "$URL/" 2>/dev/null || break
+    sleep 0.25
+  done
   env "$@" node fixture/server.js >/tmp/clickgraph-fixture.log 2>&1 &
   disown  # keep the shell from announcing the kill on the next restart
-  sleep 2
+  for _ in $(seq 1 40); do
+    sleep 0.25
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/" 2>/dev/null)" = "200" ] && return 0
+  done
+  echo "  FAIL: the fixture never came up — the scenario below did not run"
+  echo "  ---- fixture log ----"; cat /tmp/clickgraph-fixture.log
+  fail=$((fail+1))
+  return 1
 }
 
 check() {
@@ -399,6 +420,44 @@ node -e '
     fail("a field with no unambiguous submit was typed into anyway");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "fills the inferred cluster, proves its button, and leaves the ambiguous field alone"
+
+echo "J: a control whose whole effect is geometric"
+# Found on App Atlas: Zoom In, Zoom Out and Fit View on a React Flow canvas were
+# all reported dead. They work — they rewrite one CSS transform, and a
+# fingerprint made of text and controls cannot see that. The risk in fixing it is
+# the opposite mistake, so the dead button beside the working one is the check
+# that matters: "something moved" must not become an alibi for the whole page.
+start_fixture PORT="$PORT" CANVAS=1
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-canvas.json \
+  >/tmp/clickgraph-canvas-out.json 2>&1
+check "$?" "0" "a walk of the canvas screen still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-canvas-out.json");
+  const g = require("/tmp/clickgraph-canvas.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const edge = (name) => g.edges.find((e) => e.action.selector.label.includes(name));
+  const zoom = edge("Zoom in");
+  if (!zoom) fail("the zoom button was never walked");
+  if (zoom.outcome.kind !== "visual-only")
+    fail(`a working zoom read as ${zoom.outcome.kind}, not visual-only`);
+  if (v.findings.some((f) => /Zoom in/.test(f.control)))
+    fail("a button that moves the canvas was still reported as a finding");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a button whose only effect is a transform is not called dead"
+
+node -e '
+  const v = require("/tmp/clickgraph-canvas-out.json");
+  const g = require("/tmp/clickgraph-canvas.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = g.edges.find((e) => e.action.selector.label.includes("Recenter"));
+  if (!dead) fail("the dead button was never walked");
+  if (dead.outcome.kind !== "no-effect")
+    fail(`the dead button read as ${dead.outcome.kind} — the geometry signal is too broad`);
+  if (!v.findings.some((f) => /Recenter/.test(f.control)))
+    fail("a button wired to nothing went unreported because something else on the page moved");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and the dead button beside it is still reported"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

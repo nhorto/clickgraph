@@ -34,7 +34,7 @@ function edgeKey(edge: UIEdge): string {
   return controlKey(edge.from, edge.action.role, edge.action.name);
 }
 
-const WORKING: OutcomeKind[] = ['navigated', 'state-changed', 'network-only'];
+const WORKING: OutcomeKind[] = ['navigated', 'state-changed', 'network-only', 'visual-only'];
 const BROKEN_KINDS: OutcomeKind[] = ['no-effect', 'error'];
 
 /** Benign outcomes are expected behavior and must never read as a defect. */
