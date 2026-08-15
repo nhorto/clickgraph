@@ -153,6 +153,43 @@ function extractPageData() {
     return el.getAttribute('role') === 'button';
   }
 
+  /**
+   * Says it is the current item with a class name instead of with ARIA.
+   *
+   * App Atlas's breadcrumb for the page you are already on is
+   * `class="crumb is-current"` with no `aria-current` anywhere, so it read as a
+   * dead control — clicking the crumb for where you already are correctly does
+   * nothing, and every one of the existing rules missed it: no ARIA to read, not
+   * a link so there is no href to compare, and the walk arrived by a different
+   * control so it was never "already applied".
+   *
+   * A class name is a far weaker signal than an ARIA attribute. It is the app's
+   * private vocabulary, and `active` sitting on a genuinely broken button would
+   * excuse the bug — the exact false negative this project trades away findings
+   * to avoid. So the class is never enough on its own: the control must also
+   * name the place the browser is already at. Two independent signals agreeing
+   * is what makes it safe to act on; either one alone is a guess.
+   */
+  function marksItselfCurrent(el: any, name: string): boolean {
+    const tokens: string[] = el.classList ? Array.from(el.classList) : [];
+    const flagged = tokens.some((c) => /(^|-)(current|active|selected)$/.test(c.toLowerCase()));
+    if (!flagged) return false;
+    // Compared as slugs, because a breadcrumb reads "Q3 report" while the URL
+    // it names says `/reports/q3-report`. Requiring the label verbatim would
+    // only ever match apps whose routes are already written in prose.
+    const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const label = slug(name);
+    // Short names match everything. "Map" turns up in half the URLs on the web.
+    if (label.length < 3) return false;
+    let here = location.href;
+    try {
+      here = decodeURIComponent(here);
+    } catch {
+      /* a malformed escape is not worth failing over — compare what we have */
+    }
+    return slug(here).includes(label);
+  }
+
   /** The control that submits its form — a bare `<button>` defaults to submit. */
   function isSubmitControl(el: any): boolean {
     if (!formOf(el)) return false;
@@ -321,7 +358,8 @@ function extractPageData() {
       // nothing, so a no-effect result here is not a defect.
       selected:
         el.getAttribute('aria-selected') === 'true' ||
-        (el.hasAttribute('aria-current') && el.getAttribute('aria-current') !== 'false'),
+        (el.hasAttribute('aria-current') && el.getAttribute('aria-current') !== 'false') ||
+        marksItselfCurrent(el, name),
       // Looks like it responds to hover rather than click — a glossary term, a
       // tooltip trigger. Clicking these does nothing by design, so a click-only
       // walker would report a whole dashboard of them as dead controls.

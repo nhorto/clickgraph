@@ -24,6 +24,11 @@
  * be checked against the case it used to get wrong: without a session it walks
  * the login form and reports a clean run of a page nobody cares about.
  *
+ * Run with CRUMB=1 to add /reports/q3-report, where the app marks the current
+ * breadcrumb with a CSS class and no ARIA at all. Its dead-on-purpose crumb sits
+ * beside a genuinely broken button that also carries an "active" class, because
+ * the risk in reading class names is excusing exactly that.
+ *
  * Run with CANVAS=1 to add /canvas, where a button's whole effect is geometric:
  * it rewrites a CSS transform and changes not a word on the page. Beside it sits
  * a button wired to nothing, because the interesting question is not whether a
@@ -54,6 +59,7 @@ const AUTH = process.env.AUTH === '1';
 const ROUTE = process.env.ROUTE === '1';
 const CLUSTER = process.env.CLUSTER === '1';
 const CANVAS = process.env.CANVAS === '1';
+const CRUMB = process.env.CRUMB === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -163,6 +169,7 @@ const routes = {
     <p><a href="https://example.com/docs">Read the docs</a></p>
     ${CLUSTER ? `<p><a href="/invite" data-testid="invite-link">Invite a teammate</a></p>` : ''}
     ${CANVAS ? `<p><a href="/canvas" data-testid="canvas-link">Canvas</a></p>` : ''}
+    ${CRUMB ? `<p><a href="/reports/q3-report" data-testid="q3-link">Q3 report</a></p>` : ''}
     <script>
       document.getElementById('save').addEventListener('click', async () => {
         await fetch('/api/save', { method: 'POST' });
@@ -281,6 +288,32 @@ const routes = {
       });
       // "Recenter" is wired to nothing at all, on a page where something else
       // does move. It has to still be reported.
+    </script>`),
+      }
+    : {}),
+
+  // Only linked when CRUMB=1. The app says "you are here" in CSS and nowhere
+  // else — no aria-current, and these are buttons, so there is no href to
+  // compare either. The second card is the guard: a class alone must not be
+  // enough, or "active" becomes a way for any broken button to excuse itself.
+  ...(CRUMB
+    ? {
+        '/reports/q3-report': page('Q3 report', `
+    <h1>Q3 report</h1>
+    <nav class="crumbs">
+      <a href="/">Home</a>
+      <button class="crumb is-current" data-testid="crumb-current">Q3 report</button>
+    </nav>
+
+    <p><button class="toolbar-btn active" data-testid="stale-refresh">Refresh totals</button></p>
+    <script>
+      // Both buttons here are wired to nothing, and only one of them is a bug.
+      //
+      // The breadcrumb for the page you are on does nothing because that is what
+      // a breadcrumb for the current page does. "Refresh totals" does nothing
+      // because it is broken — and it carries class="active" precisely so that
+      // excusing it is the easiest mistake available. What separates them is
+      // that one names the page the browser is on and the other does not.
     </script>`),
       }
     : {}),

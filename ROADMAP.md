@@ -101,9 +101,27 @@ Deliberately split in two, because one half is much cheaper than the other:
       button beside the working zoom, because that is the half that can regress
       quietly.
 
+- [x] **A control that says "you are here" in CSS.** The last finding left
+      standing on App Atlas after the canvas fix was its breadcrumb: a button
+      named `@app-atlas/cli`, on the screen whose URL is `app:@app-atlas/cli`,
+      marked `class="crumb is-current"` and carrying no ARIA at all. Clicking it
+      changes nothing, correctly, and all three existing rules missed it — no
+      `aria-current` to read, no href to compare, and the walk arrived by a
+      different control so it was never already-applied.
+
+      What makes it worth writing down is the shape of the fix rather than the
+      bug. Trusting a class name is trusting the app's private vocabulary, and
+      `active` on a genuinely broken button would excuse it — trading this false
+      positive straight for its opposite. So the class is only half: the control
+      must also name the place the browser is already at. That pairing is the
+      same move the canvas fix made, and it is becoming the pattern for this
+      whole category — one weak signal is a guess, two independent weak signals
+      agreeing is evidence.
+
 - [ ] Keep walking new real apps; each one so far has found a false-positive
-      class the fixture could not (see README). Four for four now, and the last
-      one arrived while dogfooding an unrelated change.
+      class the fixture could not (see README). Five for five now, and the last
+      two both arrived while dogfooding an unrelated change rather than from
+      going looking.
 
 ## Phase 3 — a fast inner loop
 

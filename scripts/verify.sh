@@ -12,6 +12,7 @@
 #   H  a baseline that ran out of budget does not invent regressions
 #   I  fields grouped by layout, where the app never wrote a form
 #   J  a control whose whole effect is geometric
+#   K  an app that marks the current item in CSS instead of ARIA
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -21,12 +22,30 @@ PORT=${PORT:-4173}
 URL="http://localhost:$PORT"
 pass=0; fail=0
 
-# The bracket is not cosmetic. `pkill -f` matches whole command lines, so the
-# bare pattern also matches any shell whose own command line happens to contain
-# it — including the one that invoked this script. Two runs died that way,
-# looking exactly like test failures. `[n]ode` matches the real server and can
-# never match a command line quoting the pattern itself.
-cleanup() { pkill -f "[n]ode fixture/server.js" 2>/dev/null; }
+# Kill this suite's own fixture, and nothing else alive on the machine.
+#
+# Two conditions, because each one alone has drawn blood. Matching by name
+# (`pkill -f "node fixture/server.js"`) killed every fixture server anywhere,
+# so a second suite running beside this one — another checkout, another agent —
+# tore down this one's app mid-scenario, and the wreckage was reported as
+# scenario failures rather than as interference. Matching only by port would
+# instead kill whatever unrelated thing happens to hold 4173. So: the process
+# listening on our port, and only if it is a fixture server.
+#
+# `pkill -f` is deliberately not used even for the name half. It matches whole
+# command lines, so the bare pattern also matches any shell whose own command
+# line quotes it — including the one that invoked this script. Two runs died
+# that way, looking exactly like test failures.
+cleanup() {
+  local pid cmd
+  for pid in $(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+    case "$cmd" in
+      *fixture/server.js*) kill "$pid" 2>/dev/null ;;
+    esac
+  done
+  return 0
+}
 trap cleanup EXIT
 
 # Wait for the fixture to actually answer, rather than sleeping and hoping.
@@ -458,6 +477,43 @@ node -e '
     fail("a button wired to nothing went unreported because something else on the page moved");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and the dead button beside it is still reported"
+
+echo "K: an app that marks the current item in CSS instead of ARIA"
+# App Atlas's breadcrumb for the page you are on is class="crumb is-current"
+# with no ARIA anywhere, and it read as a dead control. Reading the class fixes
+# that and buys the opposite risk: "active" on a genuinely broken button would
+# excuse the bug. Both buttons on this screen do nothing; only one is a defect,
+# and the only thing separating them is whether it names the page you are on.
+start_fixture PORT="$PORT" CRUMB=1
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-crumb.json \
+  >/tmp/clickgraph-crumb-out.json 2>/dev/null
+check "$?" "0" "a walk of the breadcrumb screen still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-crumb-out.json");
+  const g = require("/tmp/clickgraph-crumb.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const crumb = g.edges.find((e) => e.action.selector.label === `button "Q3 report"`);
+  if (!crumb) fail("the breadcrumb was never walked");
+  if (!crumb.outcome.benign)
+    fail(`the current-page breadcrumb was not treated as benign (${crumb.outcome.kind})`);
+  if (v.findings.some((f) => /Q3 report/.test(f.control)))
+    fail("the breadcrumb for the current page was reported as a dead control");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a breadcrumb marked current in CSS is not called dead"
+
+node -e '
+  const v = require("/tmp/clickgraph-crumb-out.json");
+  const g = require("/tmp/clickgraph-crumb.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const broken = g.edges.find((e) => /Refresh totals/.test(e.action.selector.label));
+  if (!broken) fail("the broken button was never walked");
+  if (broken.outcome.benign)
+    fail("a broken button excused itself with class=active — the class alone is being trusted");
+  if (!v.findings.some((f) => /Refresh totals/.test(f.control)))
+    fail("a genuinely dead button went unreported because it carried an active class");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and a dead button carrying the same class is still reported"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

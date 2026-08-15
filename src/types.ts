@@ -58,7 +58,13 @@ export interface ElementDescriptor {
    */
   fallback: string | null;
   disabled: boolean;
-  /** Marked as the active tab or current page via aria-selected / aria-current. */
+  /**
+   * Marked as the active tab or current page — by `aria-selected` /
+   * `aria-current`, or by a class name like `is-current` *and* a name matching
+   * the URL the browser is already on. The second form needs both halves: a
+   * class alone is the app's private vocabulary, and trusting it would let
+   * `active` on a broken button excuse the bug.
+   */
   selected: boolean;
   /** Signals it responds to hover (cursor:help, title, aria-describedby). */
   hoverAffordance: boolean;
