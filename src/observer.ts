@@ -115,6 +115,38 @@ function extractPageData() {
     return el.form ?? el.closest('form');
   }
 
+  /**
+   * How far above a field to look for the button that submits it. Six levels of
+   * wrapper divs covers the styling layers a component library puts between a
+   * label and its card; past that the ancestor is the page, and everything on
+   * the page is "in reach" of everything else.
+   */
+  const CLUSTER_DEPTH = 6;
+
+  /** Takes typing or choosing, rather than clicking. Mirrors `isTextEntry`. */
+  function isFieldLike(el: any): boolean {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'textarea' || tag === 'select') return true;
+    if (tag !== 'input') return false;
+    return !['checkbox', 'radio', 'submit', 'button', 'reset', 'file', 'range', 'color']
+      .includes((el.getAttribute('type') || 'text').toLowerCase());
+  }
+
+  /**
+   * Could be the thing that submits a cluster. Links are deliberately not here:
+   * a "Forgot your password?" beside a login box is not competing to be the
+   * submit, and counting it would refuse every cluster worth finding.
+   */
+  function isPressLike(el: any): boolean {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'button') return true;
+    if (tag === 'input') {
+      return ['submit', 'button', 'image', 'reset']
+        .includes((el.getAttribute('type') || '').toLowerCase());
+    }
+    return el.getAttribute('role') === 'button';
+  }
+
   /** The control that submits its form — a bare `<button>` defaults to submit. */
   function isSubmitControl(el: any): boolean {
     if (!formOf(el)) return false;
@@ -161,6 +193,49 @@ function extractPageData() {
   // Position in the page is enough of an identifier: grouping only has to hold
   // within one snapshot, and a form rarely carries a stable id of its own.
   const forms = Array.from(document.querySelectorAll('form'));
+
+  /**
+   * The grouping the app never wrote down.
+   *
+   * Plenty of real apps put some inputs and a button on the page with no
+   * `<form>` anywhere and wire the button to a handler. Nothing in that DOM says
+   * which fields belong to which button, so the grouping has to be inferred —
+   * and the inference is only worth making where being wrong does not cost
+   * anything. Typing into fields that do not belong together is worse than not
+   * typing at all, so a field joins a cluster only when exactly one button is in
+   * reach of it. Two, and which one it is for is a guess; none, and there is
+   * nothing to submit with. Either way the field stays skipped, as it is today.
+   *
+   * Anchored from the fields rather than the buttons because there are far fewer
+   * of them, and because on most screens there are none at all — which makes
+   * this cost nothing on the screens that do not need it.
+   */
+  const clusterId = new Map<any, string>();
+  {
+    const bareFields = all.filter((el: any) => !formOf(el) && isFieldLike(el));
+    if (bareFields.length > 0) {
+      const barePresses = all.filter((el: any) => !formOf(el) && isPressLike(el));
+      const members = new Map<any, any[]>();
+      for (const field of bareFields) {
+        let node: any = field.parentElement;
+        for (let depth = 0; node && depth < CLUSTER_DEPTH; depth++, node = node.parentElement) {
+          const reach = barePresses.filter((b: any) => node.contains(b));
+          if (reach.length === 0) continue;
+          // More than one, and this field's submit is a guess. Stop climbing:
+          // a wider ancestor only ever has more buttons in it, not fewer.
+          if (reach.length > 1) break;
+          members.set(reach[0], [...(members.get(reach[0]) ?? []), field]);
+          break;
+        }
+      }
+      let n = 0;
+      for (const [button, fields] of members) {
+        const id = `cluster-${n++}`;
+        clusterId.set(button, id);
+        for (const field of fields) clusterId.set(field, id);
+      }
+    }
+  }
 
   // Count duplicates up front so we only claim a selector is unique when it is.
   const roleNameCounts = new Map<string, number>();
@@ -224,11 +299,17 @@ function extractPageData() {
       // password identifies a login wall, and the rest decide what a future
       // walker would be allowed to type into a field.
       inputType: tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
-      formId: forms.indexOf(formOf(el)) >= 0 ? `form-${forms.indexOf(formOf(el))}` : null,
+      formId:
+        forms.indexOf(formOf(el)) >= 0
+          ? `form-${forms.indexOf(formOf(el))}`
+          : (clusterId.get(el) ?? null),
+      formKind: formOf(el) ? 'form' : clusterId.has(el) ? 'cluster' : null,
       // A second way to reach the same element, for when the first one stops
       // working. Never stored in the graph — it exists only within a run.
       fallback: css,
-      formSubmit: isSubmitControl(el),
+      // A cluster's button is its submit by construction: it is the one button
+      // its fields could belong to, which is the whole reason the cluster formed.
+      formSubmit: isSubmitControl(el) || (clusterId.has(el) && isPressLike(el)),
       disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
       // Already the active tab / current page. Clicking it is expected to do
       // nothing, so a no-effect result here is not a defect.

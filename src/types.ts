@@ -35,6 +35,16 @@ export interface ElementDescriptor {
    * means something is the whole form.
    */
   formId: string | null;
+  /**
+   * How that grouping was arrived at. A `form` is what the app declared; a
+   * `cluster` is what was inferred from the layout because the app declared
+   * nothing — the React pattern of loose inputs and a handler-bound button.
+   *
+   * Worth keeping apart, because everything the browser will answer for a real
+   * form it refuses to answer for a cluster. `checkValidity` above all: a form
+   * says whether it would submit, and a cluster has nothing to ask.
+   */
+  formKind?: 'form' | 'cluster' | null;
   /** This control submits its form. */
   formSubmit: boolean;
   /**

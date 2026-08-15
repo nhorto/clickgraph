@@ -138,6 +138,15 @@ A submitted form that comes back `no-effect` is the finding this is for: it
 accepted what you typed and did nothing with it. Rows the run created are
 greppable by `clickgraph-test`; say so if the user may need to clean them up.
 
+This covers loose fields too — the common React shape of some inputs and a
+button with no `<form>` around them. The grouping gets inferred from layout, but
+only where it is unambiguous: a field with exactly one button in reach joins it,
+and a field with two nearby buttons is left skipped rather than guessed at. So a
+control reported `needs-input` on a form-less screen may mean the fields could
+not be grouped, not that they were empty — the skip reason says which. If you
+built such a screen and want it actually exercised, `--fill-forms` is what
+reaches it.
+
 ## Reading the verdict
 
 `--json` prints a compact object, not the whole graph. Read `ok` and `verdict`
@@ -207,7 +216,8 @@ you did not touch are worth surfacing, not silently rewriting.
 ## What it cannot do yet
 
 It clicks, hovers, chooses from a `<select>`, and — with `--fill-forms` — fills
-and submits a real `<form>`. It does not drive anything else: a field cluster
-that is not inside a `<form>` element, a drag, a canvas, a file upload, or a
-multi-step wizard that needs a specific value to advance. Those come back as
-skipped, which means untested, not working.
+and submits a form, whether the app declared one or the grouping had to be
+inferred from layout. It does not drive anything else: a drag, a canvas, a file
+upload, a field whose submit button is ambiguous, or a multi-step wizard that
+needs a specific value to advance. Those come back as skipped, which means
+untested, not working.

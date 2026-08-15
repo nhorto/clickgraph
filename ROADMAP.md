@@ -60,10 +60,28 @@ Deliberately split in two, because one half is much cheaper than the other:
       answers it, and the form is now reported as skipped until something
       fills it in. This one came from thinking the feature through rather than
       from a real app, which is the first time that has happened.
-- [ ] Field clusters that are not inside a `<form>` element — the React
-      pattern of some inputs and a handler-bound button. There is no grouping
-      to key on, and guessing one wrong means typing into fields that do not
-      belong together. Currently skipped, which is honest, and a real gap.
+- [x] **Field clusters that are not inside a `<form>` element** — the React
+      pattern of some inputs and a handler-bound button. There is no grouping to
+      key on, so it is inferred from layout, and the shape of the inference is
+      the whole design: a field joins a cluster only when exactly one button is
+      in reach of it, within six ancestor levels, links not counted. Two buttons
+      and it stays skipped exactly as before, because guessing wrong means
+      typing into fields that do not belong together, and that is a worse
+      failure than not typing at all.
+
+      The part that was not obvious until it was written: this is the empty-form
+      false positive again, with the browser's answer removed. `checkValidity`
+      is what stops a walk calling an unfilled form's submit button dead, and
+      there is no form here to ask — so the fields are read directly, and a
+      cluster with an empty one is reported as needing input. That check is
+      one-way, like the one it mirrors: unreadable counts as filled, so it can
+      hold back a click but never invent a reason to make one.
+
+      Both halves are verified, because a rule that only ever refuses cannot be
+      told from a rule that does nothing: the unfilled cluster is skipped with a
+      reason rather than called dead, and `--fill-forms` fills the inferred
+      cluster and proves its button really works — while the field beside two
+      buttons is still never typed into.
 - [ ] Keep walking new real apps; each one so far has found a false-positive
       class the fixture could not (see README).
 

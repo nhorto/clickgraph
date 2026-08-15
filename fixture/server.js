@@ -24,6 +24,15 @@
  * be checked against the case it used to get wrong: without a session it walks
  * the login form and reports a clean run of a page nobody cares about.
  *
+ * Run with CLUSTER=1 to add /invite, a screen with no <form> on it at all: two
+ * loose inputs and a button wired by hand, which is how most React apps write a
+ * form. Clicking that button with the fields empty changes nothing, exactly as a
+ * dead button would — so a walk that has not filled them must report that it
+ * could not tell, and one that has must prove the button works. Its second card
+ * puts two buttons beside one field, which is the case where the grouping cannot
+ * be inferred and guessing it would mean typing into fields that do not belong
+ * together.
+ *
  * Run with ROUTE=1 to add a whole new screen, reached by a new link on /orders,
  * with a dead button on it. This is the case that separates a walk from a
  * replay: a walk discovers the screen and finds the dead button, while a replay
@@ -37,6 +46,7 @@ const PORT = Number(process.env.PORT ?? 4173);
 const BREAK = process.env.BREAK === '1';
 const AUTH = process.env.AUTH === '1';
 const ROUTE = process.env.ROUTE === '1';
+const CLUSTER = process.env.CLUSTER === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -58,6 +68,7 @@ const page = (title, body) => `<!doctype html>
   button { padding: .4rem .8rem; margin: .25rem .25rem .25rem 0; }
   button[disabled] { opacity: .5; }
   #modal { border: 2px solid #333; padding: 1rem; margin-top: 1rem; }
+  .card { border: 1px solid #ccc; padding: 1rem; margin: 1rem 0; }
 </style></head>
 <body>
 <nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a></nav>
@@ -143,6 +154,7 @@ const routes = {
     <button id="advanced" disabled>Advanced options</button>
     <button id="delete-account">Delete account</button>
     <p><a href="https://example.com/docs">Read the docs</a></p>
+    ${CLUSTER ? `<p><a href="/invite" data-testid="invite-link">Invite a teammate</a></p>` : ''}
     <script>
       document.getElementById('save').addEventListener('click', async () => {
         await fetch('/api/save', { method: 'POST' });
@@ -190,6 +202,55 @@ const routes = {
       // form looks complete, accepts what you type, and loses it.
       document.getElementById('feedback').addEventListener('submit', (e) => e.preventDefault());
     </script>`),
+
+  // Only linked when CLUSTER=1. Two cards, and the difference between them is
+  // the whole feature: the first is a group the walker has to infer, the second
+  // is one it has to refuse to infer.
+  ...(CLUSTER
+    ? {
+        '/invite': page('Invite', `
+    <h1>Invite a teammate</h1>
+
+    <div class="card">
+      <p><label>Name <input type="text" id="invite-name" name="name"></label></p>
+      <p><label>Email <input type="email" id="invite-email" name="email"></label></p>
+      <button id="send-invite" data-testid="send-invite">Send invite</button>
+    </div>
+    <p id="invite-result"></p>
+
+    <div class="card">
+      <p><label>Note <input type="text" id="note" name="note"></label></p>
+      <button id="save-note" data-testid="save-note">Save note</button>
+      <button id="clear-note" data-testid="clear-note">Clear</button>
+    </div>
+    <p id="note-result"></p>
+
+    <script>
+      // No <form> anywhere on this page, which is the point. "Send invite"
+      // declines an empty invite in silence — indistinguishable, from outside,
+      // from a button wired to nothing. A walk that has not filled the fields
+      // must say it could not tell, and one that has must prove it works.
+      document.getElementById('send-invite').addEventListener('click', async () => {
+        const name = document.getElementById('invite-name').value.trim();
+        const email = document.getElementById('invite-email').value.trim();
+        if (!name || !email) return;
+        await fetch('/api/signup', { method: 'POST' });
+        document.getElementById('invite-result').textContent = 'Invited ' + email;
+      });
+      // The second card has two buttons, so which one "Note" is for is a guess.
+      // Both work on their own, so refusing to group them costs a walk nothing
+      // here — the field stays skipped, and neither button is called dead.
+      document.getElementById('save-note').addEventListener('click', () => {
+        document.getElementById('note-result').textContent =
+          'Saved: ' + document.getElementById('note').value;
+      });
+      document.getElementById('clear-note').addEventListener('click', () => {
+        document.getElementById('note').value = '';
+        document.getElementById('note-result').textContent = 'Cleared';
+      });
+    </script>`),
+      }
+    : {}),
 
   '/about': page('About', `<h1>About</h1><p>Acme, since 1998.</p>`),
 };

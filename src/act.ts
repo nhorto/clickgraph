@@ -223,6 +223,31 @@ async function formWillSubmit(page: Page, selector: Selector): Promise<boolean> 
   }
 }
 
+/**
+ * The same question, for a group the app never declared as a form.
+ *
+ * There is no form here, so there is nothing to ask `checkValidity` — and the
+ * gap it leaves is the same false positive it was written to close. A handler
+ * that quietly declines an empty cluster and a button wired to nothing are
+ * identical from the outside: both change no DOM. So the fields are read
+ * instead, and a cluster with an empty one is reported as needing input rather
+ * than guessed at. Unreadable counts as filled, so this can only hold back a
+ * click, never invent a reason to make one.
+ */
+async function clusterIsFilled(page: Page, fields: ElementDescriptor[]): Promise<boolean> {
+  for (const field of fields) {
+    try {
+      const at = await locate(page, field);
+      if (!at) continue;
+      const value = await resolve(page, at).inputValue({ timeout: ACTION_TIMEOUT });
+      if (value.trim() === '') return false;
+    } catch {
+      continue;
+    }
+  }
+  return true;
+}
+
 /* ---------- the browser a run drives ---------- */
 
 export interface Session {
@@ -468,6 +493,28 @@ export async function attempt(
       },
       at,
     );
+  }
+
+  // And the same refusal where the browser has no opinion to offer, because the
+  // app grouped its fields with layout instead of a <form>. Without this the
+  // cluster's button is clicked against empty fields — which is exactly the
+  // check above, skipped for every app that does not use forms.
+  if (el.formSubmit && el.formKind === 'cluster') {
+    const fields = siblings.filter(
+      (f) => f !== el && f.formId === el.formId && !f.disabled && isTextEntry(f),
+    );
+    if (fields.length > 0 && !(await clusterIsFilled(page, fields))) {
+      return stay(
+        {
+          reason: 'needs-input',
+          detail: filled.length > 0
+            ? `still empty after filling ${filled.length} field(s)`
+            : `${fields.length} field(s) beside it are empty, and these are not in a ` +
+              'form, so nothing will say whether a click was declined or ignored',
+        },
+        at,
+      );
+    }
   }
 
   const action: Action = choice

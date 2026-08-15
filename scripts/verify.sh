@@ -9,6 +9,8 @@
 #   E  an app behind a login screen is not reported as a clean run
 #   F  a form is only judged once it has been filled in
 #   G  --replay finds what a full diff finds, and says what it did not open
+#   H  a baseline that ran out of budget does not invent regressions
+#   I  fields grouped by layout, where the app never wrote a form
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -339,6 +341,64 @@ node -e '
     fail(`replay dropped the baselines switches: ${gone.map((r) => r.summary).join(" | ")}`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "a replay inherits --fill-forms instead of losing every form submit"
+
+echo "I: fields grouped by layout, where the app never wrote a form"
+# CLUSTER=1 adds a screen with no <form> on it: loose inputs and a button wired
+# by hand, which is how most React apps write a form. Everything the browser
+# answers for a real form it refuses to answer here, so both halves need proving
+# — that an unfilled cluster is not called dead, and that a filled one is really
+# exercised rather than quietly skipped.
+start_fixture PORT="$PORT" CLUSTER=1
+rm -rf .uigraph
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-cluster-off.json \
+  >/tmp/clickgraph-cluster-off-out.json 2>/dev/null
+check "$?" "0" "a walk of the form-less screen still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-cluster-off-out.json");
+  const g = require("/tmp/clickgraph-cluster-off.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.findings.some((f) => /Send invite/.test(f.control)))
+    fail("the cluster submit was called dead against fields nobody filled in");
+  const skip = g.coverage.skipped.find((s) => /Send invite/.test(s.label));
+  if (!skip) fail("the cluster submit was neither walked nor skipped with a reason");
+  if (skip.reason !== "needs-input") fail(`want needs-input, got ${skip.reason}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "does not call a form-less submit dead when its fields are empty"
+
+# The other card puts two buttons beside one field. Which one the field belongs
+# to cannot be read off the page, and guessing means typing into fields that do
+# not go together — so no cluster forms, and both buttons stay ordinary controls.
+node -e '
+  const v = require("/tmp/clickgraph-cluster-off-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.findings.some((f) => /Save note|Clear/.test(f.control)))
+    fail("refusing to group the ambiguous card cost a working button its verdict");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "refuses to guess a grouping, without calling the ungrouped buttons dead"
+
+# --fill-forms is what turns "could not tell" into an answer, and it has to reach
+# a cluster as readily as a real form or the skip above is just a nicer silence.
+node dist/cli.js walk "$URL" --quiet --json --fill-forms --out /tmp/clickgraph-cluster-on.json \
+  >/tmp/clickgraph-cluster-on-out.json 2>/dev/null
+check "$?" "0" "a walk that fills the form-less screen still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-cluster-on-out.json");
+  const g = require("/tmp/clickgraph-cluster-on.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const invite = g.edges.find((e) => e.action.kind === "fill" && /Send invite/.test(e.action.selector.label));
+  if (!invite) fail("the cluster was never filled and submitted as one action");
+  if (invite.outcome.kind === "no-effect")
+    fail("the cluster was filled, submitted, and still read as doing nothing");
+  if (!invite.action.fill.every((f) => /clickgraph-test/.test(f.value)))
+    fail(`a value was typed that is not obviously synthetic: ${JSON.stringify(invite.action.fill)}`);
+  if (v.findings.some((f) => /Send invite/.test(f.control)))
+    fail("the cluster works once filled, and was reported broken anyway");
+  // The ungrouped field must stay untouched even here: --fill-forms asks for
+  // forms to be filled, not for every input on the page to be typed into.
+  if (g.edges.some((e) => (e.action.fill ?? []).some((f) => /Note/.test(f.label))))
+    fail("a field with no unambiguous submit was typed into anyway");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "fills the inferred cluster, proves its button, and leaves the ambiguous field alone"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
