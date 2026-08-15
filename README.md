@@ -142,6 +142,32 @@ person. A password field is never typed into and stops its whole form — a wron
 password is a failed sign-in attempt, which on a real app means rate limiting or
 a locked account.
 
+## Deterministic app state
+
+Form submissions and other walked controls can change a persistent development
+database. Use `--pre` to reset or reseed the app before each run:
+
+```bash
+npx clickgraph walk http://localhost:5173 --fill-forms --pre "npm run seed:reset"
+npx clickgraph diff http://localhost:5173 --pre "npm run seed:reset"
+```
+
+The command runs before the browser opens. A non-zero exit aborts with exit code
+2, and the command is recorded in the graph's `WalkConfig` so the baseline says
+how it was prepared. Its output goes to stderr, keeping `--json` stdout valid.
+
+`diff` inherits omitted coverage settings such as `--fill-forms`, walk budgets,
+settle time, and storage state from its baseline.
+Explicit overrides that differ from the baseline produce a prominent warning
+and appear in JSON as `configWarnings`. Use `--no-fill-forms` or
+`--no-allow-dangerous` to make a safe override explicit.
+
+A recorded `--pre` command and `--allow-dangerous` permission are deliberately
+not inherited: loading a graph file must not execute a stored shell command or
+authorize destructive clicks. Repeat either explicitly after reviewing it. The
+diff warns before walking when the baseline used one and the current invocation
+does not.
+
 ## Safety
 
 The walker clicks autonomously against a real app, so by default it refuses controls matching destructive patterns (delete, remove, sign out, pay, purchase, deactivate), skips off-origin links, and skips disabled controls. All of them are reported as *skipped with a reason* — never as passing. `--allow-dangerous` overrides, and should only be pointed at a disposable environment.
@@ -159,11 +185,11 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through six scenarios — unchanged (twice, for
+Runs the fixture app through eight scenarios — unchanged (twice, for
 determinism), a broken interaction, a new feature with one dead control, the
 JSON verdict agreeing with the exit code, an app behind a login screen, and a
-form that drops its submission beside one that works. 28 checks, all passing as
-of the last commit.
+form that drops its submission beside one that works, plus pre-walk hooks and
+baseline configuration replay. 41 checks, all passing as of the last commit.
 
 ## Tested against real apps
 

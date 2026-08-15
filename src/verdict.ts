@@ -66,6 +66,8 @@ export interface DiffVerdict {
   regressions: { kind: string; summary: string; detail?: string }[];
   fixed: { kind: string; summary: string }[];
   other: { kind: string; summary: string; detail?: string }[];
+  /** Baseline settings that the caller explicitly chose not to reproduce. */
+  configWarnings: string[];
   coverage: VerdictCoverage;
 }
 
@@ -169,7 +171,11 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   };
 }
 
-export function diffVerdict(diff: GraphDiff, current: UIGraph): DiffVerdict {
+export function diffVerdict(
+  diff: GraphDiff,
+  current: UIGraph,
+  configWarnings: string[] = [],
+): DiffVerdict {
   const pick = (severity: string) => diff.changes.filter((ch) => ch.severity === severity);
   const regressions = pick('regression');
   const fixed = pick('progression');
@@ -201,6 +207,7 @@ export function diffVerdict(diff: GraphDiff, current: UIGraph): DiffVerdict {
     })),
     fixed: fixed.map((ch) => ({ kind: ch.kind, summary: ch.summary })),
     other: other.map((ch) => ({ kind: ch.kind, summary: ch.summary, detail: ch.detail })),
+    configWarnings,
     coverage: coverageOf(current),
   };
 }

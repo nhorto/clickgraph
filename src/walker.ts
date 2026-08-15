@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright';
 import type {
   Action, ElementDescriptor, LoadHealth, Selector, SkippedElement, UIEdge, UIGraph, UINode,
@@ -63,6 +64,35 @@ const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
   allowDangerous: false,
   fillForms: false,
 };
+
+/** Run the caller's reset/setup command before opening the browser. */
+async function runPreWalk(command: string, log: (message: string) => void): Promise<void> {
+  log(`running pre-walk command: ${command}`);
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Keep stdout clean for `--json`. Hook output is operational context, so it
+    // travels with progress and errors on stderr.
+    child.stdout?.on('data', (chunk) => process.stderr.write(chunk));
+    child.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+    child.once('error', (err) => {
+      reject(new Error(`could not start pre-walk command ${JSON.stringify(command)}: ${err.message}`));
+    });
+    child.once('close', (code, signal) => {
+      if (code === 0) resolve();
+      else if (signal) {
+        reject(new Error(`pre-walk command ${JSON.stringify(command)} was terminated by ${signal}`));
+      } else {
+        reject(new Error(
+          `pre-walk command ${JSON.stringify(command)} failed with exit code ${code ?? 'unknown'}`,
+        ));
+      }
+    });
+  });
+}
 
 /**
  * Does the entry page look like a login screen?
@@ -283,6 +313,8 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
 
   const config: WalkConfig = { ...DEFAULTS, ...provided, baseUrl };
   const log = onProgress ?? (() => {});
+
+  if (config.pre) await runPreWalk(config.pre, log);
 
   const nodes: Record<string, UINode> = {};
   const edges: UIEdge[] = [];

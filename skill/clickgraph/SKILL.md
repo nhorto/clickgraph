@@ -97,6 +97,20 @@ way you treat `--allow-dangerous`:
 npx clickgraph walk http://localhost:5173 --fill-forms --json
 ```
 
+If those interactions persist data, reset the app before every baseline and
+diff so leftovers from one run cannot masquerade as UI changes:
+
+```bash
+npx clickgraph walk http://localhost:5173 --fill-forms --pre "npm run seed:reset" --json
+npx clickgraph diff http://localhost:5173 --pre "npm run seed:reset" --json
+```
+
+The hook is recorded in the graph but is never auto-executed from it; repeat it
+explicitly after reviewing the command. Permission to click dangerous controls
+also requires fresh, explicit consent. Other omitted walk settings inherit from
+the baseline. Treat any `configWarnings` in a diff verdict as a caveat on the
+comparison, especially tighter budgets or disabled form filling.
+
 A submitted form that comes back `no-effect` is the finding this is for: it
 accepted what you typed and did nothing with it. Rows the run created are
 greppable by `clickgraph-test`; say so if the user may need to clean them up.
