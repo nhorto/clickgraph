@@ -8,6 +8,8 @@
 #   D  --json says the same thing the report and the exit code say
 #   E  an app behind a login screen is not reported as a clean run
 #   F  a form is only judged once it has been filled in
+#   G  a pre-walk command runs, is recorded, and aborts clearly on failure
+#   H  diff inherits baseline settings and warns about explicit mismatches
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -16,14 +18,21 @@ cd "$(dirname "$0")/.."
 PORT=${PORT:-4173}
 URL="http://localhost:$PORT"
 pass=0; fail=0
+fixture_pid=""
 
-cleanup() { pkill -f "node fixture/server.js" 2>/dev/null; }
+cleanup() {
+  if [ -n "$fixture_pid" ]; then
+    kill "$fixture_pid" 2>/dev/null || true
+    wait "$fixture_pid" 2>/dev/null || true
+    fixture_pid=""
+  fi
+}
 trap cleanup EXIT
 
 start_fixture() {
   cleanup; sleep 0.5
   env "$@" node fixture/server.js >/tmp/clickgraph-fixture.log 2>&1 &
-  disown  # keep the shell from announcing the kill on the next restart
+  fixture_pid=$!
   sleep 2
 }
 
@@ -202,6 +211,63 @@ node -e '
     fail(`a value was typed that is not obviously synthetic: ${JSON.stringify(typed)}`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "catches the form that drops its submission, clears the one that works"
+
+echo "G: pre-walk state reset hook"
+PRE_MARKER="/tmp/clickgraph-pre-marker-$$"
+PRE_GRAPH="/tmp/clickgraph-pre-graph-$$.json"
+PRE_COMMAND="printf hook-output; printf reset > $PRE_MARKER"
+rm -f "$PRE_MARKER" "$PRE_GRAPH"
+node dist/cli.js walk "$URL" --quiet --json --pre "$PRE_COMMAND" --out "$PRE_GRAPH" \
+  >/tmp/clickgraph-pre-out.json 2>/tmp/clickgraph-pre-err.txt
+check "$?" "0" "a successful pre-walk command continues into the walk"
+test "$(cat "$PRE_MARKER" 2>/dev/null)" = "reset"
+check "$?" "0" "the pre-walk command ran before walking"
+node -e '
+  const graph = require(process.argv[1]);
+  if (graph.config.pre !== process.argv[2]) process.exit(1);
+' "$PRE_GRAPH" "$PRE_COMMAND"
+check "$?" "0" "the graph records the pre-walk command"
+node -e 'require("/tmp/clickgraph-pre-out.json")' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "pre-walk stdout stays out of the JSON verdict"
+
+node dist/cli.js walk "$URL" --quiet --pre "exit 7" \
+  --out "/tmp/clickgraph-pre-failed-$$.json" >/dev/null 2>/tmp/clickgraph-pre-failed.txt
+check "$?" "2" "a failing pre-walk command aborts the walk"
+grep -q 'pre-walk command.*failed with exit code 7' /tmp/clickgraph-pre-failed.txt
+check "$?" "0" "a failing pre-walk command explains why the walk aborted"
+
+echo "H: diff configuration follows the baseline"
+# Reuse the filled-form graph from F. Omitting --fill-forms must inherit it;
+# otherwise both submitted form flows vanish and the unchanged app regresses.
+node dist/cli.js diff "$URL" --quiet --json --baseline /tmp/clickgraph-forms-on.json \
+  >/tmp/clickgraph-config-inherit.json 2>/tmp/clickgraph-config-inherit-err.txt
+check "$?" "0" "diff inherits an omitted --fill-forms setting from the baseline"
+test ! -s /tmp/clickgraph-config-inherit-err.txt
+check "$?" "0" "matching inherited settings produce no warning"
+
+node dist/cli.js diff "$URL" --quiet --json --baseline /tmp/clickgraph-forms-on.json \
+  --no-fill-forms --max-depth 1 >/tmp/clickgraph-config-mismatch.json \
+  2>/tmp/clickgraph-config-mismatch-err.txt
+node -e '
+  const v = require("/tmp/clickgraph-config-mismatch.json");
+  const warnings = v.configWarnings.join(" ");
+  if (!/--fill-forms/.test(warnings) || !/--max-depth/.test(warnings)) process.exit(1);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the JSON verdict names every explicit baseline mismatch"
+grep -q 'WARNING: diff walk configuration differs from its baseline' \
+  /tmp/clickgraph-config-mismatch-err.txt
+check "$?" "0" "human-readable stderr makes a config mismatch prominent"
+
+# A graph is data, even when it records how it was prepared. Loading it must
+# never execute its stored command without fresh, explicit consent.
+rm -f "$PRE_MARKER"
+node dist/cli.js diff "$URL" --quiet --json --baseline "$PRE_GRAPH" --max-actions 0 \
+  >/tmp/clickgraph-pre-diff.json 2>/tmp/clickgraph-pre-diff-err.txt
+test ! -e "$PRE_MARKER"
+check "$?" "0" "diff does not auto-execute a command stored in its baseline"
+grep -q 'repeat --pre explicitly.*stored commands are never auto-executed' \
+  /tmp/clickgraph-pre-diff-err.txt
+check "$?" "0" "diff explains how to reproduce a baseline pre-walk hook safely"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

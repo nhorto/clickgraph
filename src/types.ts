@@ -177,6 +177,14 @@ export interface WalkConfig {
    */
   fillForms: boolean;
   /**
+   * Shell command run immediately before the browser walk starts.
+   *
+   * This is recorded so a baseline documents how its app state was prepared.
+   * A diff must never execute the value merely because it appeared in a graph
+   * file; callers have to opt in to running it again.
+   */
+  pre?: string;
+  /**
    * Path to a Playwright storage-state file, so the walk starts logged in.
    * Only the path is recorded in the graph — the file holds session cookies and
    * must never be copied into an artifact that gets committed.
