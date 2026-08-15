@@ -103,6 +103,18 @@ and reported:
 That run exits 1 with no regressions. Not a failure — a refusal to call a run
 clean when the screen you just built is the one it declined to open.
 
+It also finds what the slow path finds, which had been assumed rather than
+measured for as long as `--replay` has existed: every app this had been pointed
+at walked clean, so the two modes were only ever shown to cover the same ground.
+Ten working controls were broken across five states of a real app — injected by
+a proxy in front of it, so the app's own source stayed untouched — and both
+modes returned the same 12 findings: the ten dead controls, and the four states
+that went unreachable behind them. No disagreement in either direction, cascade
+included. One caveat that fell out of it: a full walk names a state `/#overview`
+where a replay may say `/#overview [Where to start reading]`, because the
+bracket is a disambiguator that appears only when several states share a route.
+Compare findings between runs, not sentences.
+
 ### What an agent reads
 
 `--json` prints a compact verdict rather than the whole graph — an agent that has

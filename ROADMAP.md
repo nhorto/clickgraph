@@ -171,6 +171,34 @@ change the app deliberately, and a walk is what they are checking.)
       without it the fast path would have quietly bought its speed by going
       blind to exactly the screen an agent had just built.
 
+- [x] **The replay reports what a full diff reports, measured at last.** The
+      standing caveat was that every app clickgraph had been pointed at walked
+      clean, so the two modes were known to cover the same ground and had never
+      once been shown to *find* the same things — which is the only property
+      anyone actually reaches for the fast path to get.
+
+      App Atlas could not answer it, because after the canvas and breadcrumb
+      fixes it reports nothing at all. So the defects were injected from
+      outside: a proxy in front of it that stops named controls from reaching
+      their handlers on the way through, which leaves the app's own source
+      untouched and breaks controls in the shape that matters — still rendered,
+      still named, still clickable, and now doing nothing. React's delegation is
+      why it has to be done that way; there are no listeners on the elements to
+      remove, so a capture-phase listener above the root is what intercepts.
+
+      Ten working edges broken across five states. Both modes returned 14
+      regressions and the same 12 distinct findings — the ten broken controls
+      and the four states that became unreachable behind them. Zero
+      disagreement in either direction, cascade included.
+
+      The only difference was in how they *named* a state: a full walk says
+      `on /#overview`, a replay says `on /#overview [Where to start reading]`.
+      Not instability — the bracket is a disambiguator that appears when several
+      states share a route, and the replay's graph has 128 states against the
+      walk's 40, so routes that were unique in one need distinguishing in the
+      other. Worth knowing before diffing report text across modes: compare
+      findings, not sentences.
+
 - [x] **Dogfooding the replay found something worth more than the replay.**
       Pointed at App Atlas — 2,086 controls, a 200-action budget — and it
       reported 97 regressions against an app that had not changed. The baseline
