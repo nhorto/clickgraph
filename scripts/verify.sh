@@ -71,6 +71,11 @@ check "$?" "1" "does not flag the button whose effect is a clipboard write"
 # there is no submit coming for it.
 grep -q '"Referral source"' /tmp/clickgraph-base.txt
 check "$?" "1" "does not flag the in-form select that holds its choice for the submit"
+# A control that only exists after a self-loop used to be walked never and
+# counted nowhere (issue #8). Reaching the dead Beep inside the panel that
+# "More actions" reveals proves appeared controls are now attempted.
+grep -q 'NO EFFECT.*"Beep"' /tmp/clickgraph-base.txt
+check "$?" "0" "walks the control that only exists after a self-loop, and finds it dead"
 grep -q '1 skipped (dangerous)' /tmp/clickgraph-base.txt; check "$?" "0" "refuses to click Delete account"
 grep -q '1 skipped (external)' /tmp/clickgraph-base.txt; check "$?" "0" "skips the off-origin link"
 
@@ -127,6 +132,7 @@ node -e '
     ["error", /Save settings/, "the 500 is not reported as an error"],
     ["no-effect", /Export/, "the unwired button is not reported as no-effect"],
     ["no-effect", /Filter orders by region/, "the ignored select is not reported"],
+    ["no-effect", /Beep/, "the control revealed by a self-loop is not reported"],
   ];
   for (const [severity, re, msg] of want) {
     if (!v.findings.some((f) => f.severity === severity && re.test(f.control))) fail(msg);
