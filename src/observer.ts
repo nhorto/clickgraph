@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Page, ConsoleMessage, Request, Response } from 'playwright';
+import type { BrowserContext, Page, ConsoleMessage, Request, Response } from 'playwright';
 import type { ElementDescriptor, NetworkCall, Outcome, Selector } from './types.js';
 import { computeFingerprint, nodeId } from './fingerprint.js';
 
@@ -20,6 +20,19 @@ export interface PageSnapshot {
    * indistinguishable from one wired to nothing (issue #1).
    */
   visualHash: string;
+  /**
+   * Hash of form-control VALUE state: each select's chosen option, each
+   * checkbox's checked bit. Effect detection only, never identity — same
+   * standing as the two hashes above.
+   *
+   * A framework that controls its inputs sets the `value` property, not an
+   * attribute, so a MutationObserver sees nothing and the chosen option is
+   * invisible to both other signals: a working select read as a dead control
+   * (issue #5). Text values stay out on purpose — typing is exercised through
+   * form submission, and a keystroke-by-keystroke hash would make every field
+   * look like an effect.
+   */
+  formStateHash: string;
 }
 
 /**
@@ -311,7 +324,21 @@ function extractPageData() {
       }),
   ].join('|');
 
-  return { title: document.title, headings, elements, text, visual };
+  // Form-control value state, read off the PROPERTIES. A controlled select
+  // holds its choice in `value`/`selectedIndex` with no attribute ever
+  // changing, so this is the only signal that can see the chosen option
+  // (issue #5). Keyed by position: like form grouping, it only has to hold
+  // within one snapshot.
+  const formState = [
+    ...Array.from(document.querySelectorAll('select'))
+      .filter(isVisible)
+      .map((el: any, i: number) => `s${i}:${el.selectedIndex}:${el.value}`),
+    ...Array.from(document.querySelectorAll('input[type="checkbox"], input[type="radio"]'))
+      .filter(isVisible)
+      .map((el: any, i: number) => `c${i}:${el.checked ? 1 : 0}`),
+  ].join('|');
+
+  return { title: document.title, headings, elements, text, visual, formState };
 }
 /* c8 ignore stop */
 
@@ -329,7 +356,43 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
     nodeId: nodeId(fingerprint),
     contentHash: createHash('sha256').update(data.text).digest('hex').slice(0, 12),
     visualHash: createHash('sha256').update(data.visual).digest('hex').slice(0, 12),
+    formStateHash: createHash('sha256').update(data.formState).digest('hex').slice(0, 12),
   };
+}
+
+/**
+ * Effects that live in browser chrome, not in the page (issue #9).
+ *
+ * A button wired to `window.print()` has no page-side footprint at all: no
+ * DOM change, no navigation, no network. No richer snapshot can see it — the
+ * only way is to be told, so a shim installed before any page script runs
+ * reports the invocation out through a context binding. The shim swallows
+ * `print` rather than forwarding it: a real print dialog would hang an
+ * autonomous walk the same way an un-dismissed `alert` would.
+ */
+const chromeEffectSink = new WeakMap<Page, string[]>();
+
+export async function instrumentChromeEffects(context: BrowserContext): Promise<void> {
+  await context.exposeBinding('__clickgraphChromeEffect', ({ page }, effect: unknown) => {
+    if (typeof effect === 'string') chromeEffectSink.get(page)?.push(effect);
+  });
+  await context.addInitScript(() => {
+    const report = (effect: string) => {
+      void (window as any).__clickgraphChromeEffect?.(effect);
+    };
+    window.print = () => report('window.print()');
+    // Clipboard writes still happen — a copy button that also updates its own
+    // label ("Copied!") should keep doing so — but headless contexts may
+    // refuse them, and a refused copy is still a wired control.
+    const clipboard = navigator.clipboard;
+    if (clipboard) {
+      const originalWrite = clipboard.writeText.bind(clipboard);
+      clipboard.writeText = (text: string) => {
+        report('clipboard write');
+        return originalWrite(text).catch(() => undefined);
+      };
+    }
+  });
 }
 
 /** Turn a recorded selector back into a live Playwright locator. */
@@ -391,6 +454,9 @@ export class ActionWatch {
     page.on('response', this.onResponse);
     page.on('console', this.onConsole);
     page.on('pageerror', this.onPageError);
+    // A fresh sink per action: whatever the shims report between here and
+    // stop() belongs to this action alone.
+    chromeEffectSink.set(page, []);
   }
 
   stop() {
@@ -401,10 +467,13 @@ export class ActionWatch {
     for (const call of this.network) {
       call.status = this.statuses.get(call.url) ?? null;
     }
+    const chromeEffects = chromeEffectSink.get(this.page) ?? [];
+    chromeEffectSink.delete(this.page);
     return {
       network: this.network,
       consoleErrors: this.consoleErrors,
       httpErrors: this.httpErrors,
+      chromeEffects,
     };
   }
 }
@@ -412,7 +481,12 @@ export class ActionWatch {
 export function classifyOutcome(
   before: PageSnapshot,
   after: PageSnapshot,
-  watch: { network: NetworkCall[]; consoleErrors: string[]; httpErrors: string[] },
+  watch: {
+    network: NetworkCall[];
+    consoleErrors: string[];
+    httpErrors: string[];
+    chromeEffects?: string[];
+  },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
 ): Outcome {
@@ -470,6 +544,20 @@ export function classifyOutcome(
     };
   }
 
+  // The effect lives in browser chrome, which no page snapshot can see: a
+  // print dialog, a clipboard write (issue #9). Same shape as the visual-only
+  // case — a working control whose effect needs the reason attached — except
+  // here the proof comes from a shim being told, not from looking harder.
+  if (watch.chromeEffects && watch.chromeEffects.length > 0) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: `invoked ${[...new Set(watch.chromeEffects)].join(', ')} — ` +
+        'browser chrome, which no page snapshot can see',
+    };
+  }
+
   // A request failed and the user saw nothing happen. That silent failure is a
   // real defect, and it is the one case where a 4xx alone is worth reporting.
   if (clientErrors.length > 0) {
@@ -484,6 +572,37 @@ export function classifyOutcome(
       ...base,
       kind: 'network-only',
       note: 'fired a request but the visible state did not change',
+    };
+  }
+
+  // The control now holds the chosen value — a select showing its new option,
+  // a checkbox now checked — and nothing else moved (issue #5). Which of two
+  // things that means depends on where the control lives:
+  //
+  // Inside a form, holding the value IS the job. The choice is consumed by the
+  // submit, and the submit's own edge is the proof of that — so this is
+  // correct behavior, recorded and kept out of findings, exactly like a link
+  // to the page it is already on. A controlled framework select whose broken
+  // handler discards the choice never reaches here: the value snaps back
+  // before the snapshot, the hash matches, and it still reads as no-effect.
+  //
+  // Outside a form there is no submit coming. A standalone filter that holds
+  // the choice while filtering nothing is the planted-defect case, so it stays
+  // a finding — with the sharper note, because "the choice went nowhere" is
+  // more useful than "nothing happened".
+  if (before.formStateHash !== after.formStateHash) {
+    if (element?.formId) {
+      return {
+        ...base,
+        kind: 'no-effect',
+        benign: true,
+        note: 'holds the chosen value for its form — the submit is what consumes it',
+      };
+    }
+    return {
+      ...base,
+      kind: 'no-effect',
+      note: 'holds the chosen value, but nothing on the page responded to it',
     };
   }
 

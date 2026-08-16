@@ -50,6 +50,18 @@ check "$?" "1" "does not flag the select that works"
 # came back indistinguishable from the unwired Export button beside it.
 grep -q '"Zoom In"' /tmp/clickgraph-base.txt
 check "$?" "1" "does not flag the control whose only effect is visual"
+# A control whose whole effect is browser chrome must not read as dead either
+# (issue #9): window.print and a clipboard write leave no page-side footprint,
+# so only the injected shims can vouch for them.
+grep -q '"Print order"' /tmp/clickgraph-base.txt
+check "$?" "1" "does not flag the button whose effect is the print dialog"
+grep -q '"Copy order link"' /tmp/clickgraph-base.txt
+check "$?" "1" "does not flag the button whose effect is a clipboard write"
+# An in-form select with no change handler holds its choice for the submit to
+# consume (issue #5). The standalone region select stays a finding above —
+# there is no submit coming for it.
+grep -q '"Referral source"' /tmp/clickgraph-base.txt
+check "$?" "1" "does not flag the in-form select that holds its choice for the submit"
 grep -q '1 skipped (dangerous)' /tmp/clickgraph-base.txt; check "$?" "0" "refuses to click Delete account"
 grep -q '1 skipped (external)' /tmp/clickgraph-base.txt; check "$?" "0" "skips the off-origin link"
 

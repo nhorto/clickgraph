@@ -16,6 +16,12 @@
  *   7. /settings "Advanced" button — disabled, must be skipped
  *   8. /signup — a form that works. Filled and submitted it creates an
  *      account; left alone it must be reported as skipped, never as broken.
+ *   9. /orders "Print order" and "Copy order link" — controls whose whole
+ *      effect is browser chrome (window.print, clipboard). Invisible to any
+ *      page snapshot, so without the shims they read as dead (issue #9).
+ *  10. /signup "Referral source" — an in-form select with no change handler:
+ *      it holds the choice for the submit to consume. Calling it dead blames
+ *      a working form field for doing exactly its job (issue #5).
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -91,6 +97,8 @@ const routes = {
     </label>
     <button id="export" data-testid="export">Export</button>
     <button id="refresh" data-testid="refresh">Refresh</button>
+    <button id="print-order" data-testid="print-order">Print order</button>
+    <button id="copy-link" data-testid="copy-link">Copy order link</button>
     ${process.env.FEATURE === '1' ? `
     <button id="print" data-testid="print">Print invoice</button>
     <button id="archive" data-testid="archive">Archive</button>` : ''}
@@ -115,6 +123,12 @@ const routes = {
     <button id="zoom-in" data-testid="zoom-in" aria-label="Zoom In">Zoom In</button>
     <script>
       // "Export" is intentionally wired to nothing at all.
+      // "Print order" and "Copy order link" work, but their whole effect is
+      // browser chrome — the case no page snapshot can see (issue #9).
+      document.getElementById('print-order').addEventListener('click', () => window.print());
+      document.getElementById('copy-link').addEventListener('click', () => {
+        navigator.clipboard?.writeText(location.href)?.catch(() => {});
+      });
       // "Zoom In" works, and proves the opposite case: a real effect that no
       // amount of reading the text or the control list can see.
       let chartScale = 1;
@@ -169,6 +183,11 @@ const routes = {
         <select id="plan" name="plan" aria-label="Plan">
           <option value="free">Free</option>
           <option value="team">Team</option>
+        </select></label></p>
+      <p><label>Referral source
+        <select id="referral" name="referral" aria-label="Referral source">
+          <option value="friend">A friend</option>
+          <option value="search">Search</option>
         </select></label></p>
       <button type="submit">Create account</button>
     </form>

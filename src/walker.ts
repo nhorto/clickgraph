@@ -5,7 +5,10 @@ import type {
   WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
-import { ActionWatch, captureState, classifyOutcome, resolve, type PageSnapshot } from './observer.js';
+import {
+  ActionWatch, captureState, classifyOutcome, instrumentChromeEffects, resolve,
+  type PageSnapshot,
+} from './observer.js';
 import { normalizeText } from './fingerprint.js';
 import { refusesFill, synthesize } from './formfill.js';
 
@@ -304,6 +307,9 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     acceptDownloads: false,
     storageState: config.storageState,
   });
+  // Before any page exists: the shims must be in place before the first app
+  // script runs, or a print on load would go unseen.
+  await instrumentChromeEffects(context);
   const page = await context.newPage();
 
   // Autonomous walking must never hang on a modal or leak tabs.
