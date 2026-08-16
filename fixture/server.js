@@ -22,6 +22,10 @@
  *  10. /signup "Referral source" — an in-form select with no change handler:
  *      it holds the choice for the submit to consume. Calling it dead blames
  *      a working form field for doing exactly its job (issue #5).
+ *  11. /about "More actions" reveals a panel WITHOUT changing any heading, so
+ *      its "Beep" button exists only after a self-loop — the class of control
+ *      that used to be walked never and counted nowhere (issue #8). Beep is
+ *      unwired, so a correct walk must reach it AND report it dead.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -218,7 +222,21 @@ const routes = {
       document.getElementById('feedback').addEventListener('submit', (e) => e.preventDefault());
     </script>`),
 
-  '/about': page('About', `<h1>About</h1><p>Acme, since 1998.</p>`),
+  '/about': page('About', `
+    <h1>About</h1><p>Acme, since 1998.</p>
+    <button id="more" data-testid="more-actions">More actions</button>
+    <div id="extra"></div>
+    <script>
+      // The panel appears with no heading change: same node, new controls —
+      // visible only through the self-loop that revealed them (issue #8).
+      // "Beep" is intentionally wired to nothing.
+      let openPanel = false;
+      document.getElementById('more').addEventListener('click', () => {
+        openPanel = !openPanel;
+        document.getElementById('extra').innerHTML = openPanel
+          ? '<button id="beep" data-testid="beep">Beep</button>' : '';
+      });
+    </script>`),
 };
 
 createServer((req, res) => {

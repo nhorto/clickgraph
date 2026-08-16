@@ -420,7 +420,27 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       /** Where the browser actually is right now, or null if unknown. */
       let atSnapshot: PageSnapshot | null = null;
 
-      for (const el of state.elements) {
+      /**
+       * The state's work list — mutable, because a self-loop can grow it.
+       *
+       * A node's element list is frozen at discovery, so a control that only
+       * exists after an action mutates the same screen — the row an "add item"
+       * submit renders, the panel a disclosure opens — used to be walked never
+       * and counted nowhere: not an edge, not a skip, not unwalked. Coverage
+       * claimed completeness it did not have (issue #8). New controls found by
+       * a self-loop are spliced in immediately after the action that revealed
+       * them, so they are attempted while the screen that holds them is still
+       * showing; `appearedIn` records that screen's structure so the re-entry
+       * gate below knows which page they belong to.
+       */
+      const pending: { el: ElementDescriptor; appearedIn?: string }[] =
+        state.elements.map((el) => ({ el }));
+      const knownKeys = new Set(
+        state.elements.map((el) => `${el.selector.strategy}|${el.selector.value}`),
+      );
+
+      for (let i = 0; i < pending.length; i++) {
+        const { el, appearedIn } = pending[i]!;
         if (actionsUsed >= config.maxActions) {
           limitHit = limitHit ?? `maxActions (${config.maxActions})`;
           unwalked++;
@@ -460,13 +480,28 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           continue;
         }
 
+        // A control that appeared mid-state can only be acted on while the
+        // screen that revealed it is still showing: the replay below re-enters
+        // the state as it was at discovery, which does not include this
+        // control. When the moment has passed, say so — a skip with a reason
+        // beats silently reporting the control as covered (issue #8).
+        if (appearedIn && atSnapshot?.fingerprint.structure !== appearedIn) {
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label,
+            reason: 'unreachable',
+            detail: 'appeared after an earlier action and was gone when the walk could return',
+          });
+          continue;
+        }
+
         // Re-enter the source state only when the browser is not already sitting
         // in it. Actions that change nothing — the common case — leave the page
         // exactly where the next action needs it, so the replay is skipped.
         // Compared on the fine structure tier, never the coarse identity tier:
         // reusing a page that merely *looks* like the source state would attribute
         // the next edge to the wrong place.
-        if (!atSnapshot || atSnapshot.fingerprint.structure !== state.fingerprint.structure) {
+        if (!appearedIn &&
+            (!atSnapshot || atSnapshot.fingerprint.structure !== state.fingerprint.structure)) {
           if (!(await gotoPath(path))) {
             unwalked++;
             atSnapshot = null;
@@ -579,6 +614,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           continue;
         }
 
+        // Both gates above guarantee a snapshot; the narrowing is for the
+        // compiler, and skipping is the honest fallback if that ever breaks.
+        if (atSnapshot === null) {
+          unwalked++;
+          continue;
+        }
         const before = atSnapshot;
         const action: Action = choice
           ? {
@@ -651,6 +692,25 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           }
         }
         const reachedNew = after.nodeId !== before.nodeId;
+
+        // A self-loop that changed the screen's structure is the signal that
+        // this node now holds controls its frozen element list does not know
+        // about (issue #8). Splice them in right after this action, so they
+        // are attempted while the screen that holds them is still up.
+        if (!reachedNew && outcome.kind === 'state-changed') {
+          const fresh = after.elements.filter((n) => {
+            const nKey = `${n.selector.strategy}|${n.selector.value}`;
+            if (knownKeys.has(nKey)) return false;
+            knownKeys.add(nKey);
+            return true;
+          });
+          if (fresh.length > 0) {
+            pending.splice(
+              i + 1, 0,
+              ...fresh.map((n) => ({ el: n, appearedIn: after.fingerprint.structure })),
+            );
+          }
+        }
 
         edges.push({
           from: state.nodeId,
