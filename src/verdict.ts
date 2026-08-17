@@ -13,6 +13,7 @@
 
 import type { GraphDiff, UIGraph } from './types.js';
 import { actionLabel, nodeLabel } from './graph.js';
+import { clickgraphVersionWarning } from './version.js';
 
 export interface VerdictFinding {
   severity: 'error' | 'no-effect';
@@ -32,12 +33,15 @@ export interface VerdictCoverage {
    */
   skipped: { reason: string; count: number; examples: string[] }[];
   limitHit: string | null;
+  expectedRoutes: string[];
+  unreachedRoutes: string[];
   /** Coverage is heuristic. Restated here so a JSON consumer cannot miss it. */
   note: string;
 }
 
 export interface WalkVerdict {
   tool: 'clickgraph';
+  version: string;
   command: 'walk';
   url: string;
   walkedAt: string;
@@ -57,6 +61,9 @@ export interface WalkVerdict {
 
 export interface DiffVerdict {
   tool: 'clickgraph';
+  version: string;
+  baselineVersion: string | null;
+  versionWarning: string | null;
   command: 'diff';
   url: string;
   baselineWalkedAt: string;
@@ -92,6 +99,8 @@ function coverageOf(graph: UIGraph): VerdictCoverage {
       examples: [...examples].slice(0, 2),
     })),
     limitHit: graph.coverage.limitHit,
+    expectedRoutes: graph.coverage.expectedRoutes ?? [],
+    unreachedRoutes: graph.coverage.unreachedRoutes ?? [],
     note: COVERAGE_NOTE,
   };
 }
@@ -111,6 +120,7 @@ export function loadIsHealthy(graph: UIGraph): boolean {
 export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   const healthy = loadIsHealthy(graph);
   const nothingWalked = graph.coverage.edgesWalked === 0;
+  const unreachedRoutes = graph.coverage.unreachedRoutes ?? [];
 
   const findings: VerdictFinding[] = graph.edges
     .filter(
@@ -138,6 +148,8 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   } else if (nothingWalked) {
     verdict =
       'nothing was walked — this run proves nothing about the app (it may have failed to load, or may need authentication)';
+  } else if (unreachedRoutes.length > 0) {
+    verdict = `${unreachedRoutes.length} expected route(s) were not reached: ${unreachedRoutes.join(', ')}`;
   } else if (findings.length === 0) {
     verdict = `${graph.coverage.edgesWalked} interaction(s) across ${graph.coverage.statesFound} state(s) all produced an observable effect`;
   } else {
@@ -152,12 +164,13 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
 
   return {
     tool: 'clickgraph',
+    version: graph.clickgraphVersion ?? 'unknown',
     command: 'walk',
     url: graph.baseUrl,
     walkedAt: graph.walkedAt,
     // A walk that never got past the login screen proved nothing about the app,
     // which is the same failure as a walk that exercised nothing at all.
-    ok: healthy && !nothingWalked && !load.likelyAuthWall,
+    ok: healthy && !nothingWalked && !load.likelyAuthWall && unreachedRoutes.length === 0,
     verdict,
     load: {
       healthy,
@@ -182,10 +195,13 @@ export function diffVerdict(
   const other = pick('info');
 
   let verdict: string;
+  const unreachedRoutes = current.coverage.unreachedRoutes ?? [];
   if (regressions.length > 0) {
     verdict = `${regressions.length} regression(s): ${regressions[0].summary}${
       regressions.length > 1 ? ` (and ${regressions.length - 1} more)` : ''
     }`;
+  } else if (unreachedRoutes.length > 0) {
+    verdict = `${unreachedRoutes.length} expected route(s) were not reached: ${unreachedRoutes.join(', ')}`;
   } else if (diff.changes.length === 0) {
     verdict = 'no change — every walked interaction behaves as it did in the baseline';
   } else {
@@ -194,11 +210,17 @@ export function diffVerdict(
 
   return {
     tool: 'clickgraph',
+    version: diff.currentClickgraphVersion ?? 'unknown',
+    baselineVersion: diff.baselineClickgraphVersion ?? null,
+    versionWarning: clickgraphVersionWarning(
+      diff.baselineClickgraphVersion,
+      diff.currentClickgraphVersion,
+    ),
     command: 'diff',
     url: current.baseUrl,
     baselineWalkedAt: diff.baselineWalkedAt,
     currentWalkedAt: diff.currentWalkedAt,
-    ok: regressions.length === 0,
+    ok: regressions.length === 0 && unreachedRoutes.length === 0,
     verdict,
     regressions: regressions.map((ch) => ({
       kind: ch.kind,

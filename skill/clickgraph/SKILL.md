@@ -51,6 +51,15 @@ Useful flags: `--max-actions <n>` and `--max-depth <n>` to bound a big app,
 `--settle <ms>` to raise the DOM-quiet period if working controls look dead in
 an app that updates late.
 
+If the repo has a route manifest or a short list of screens the task must cover,
+write those paths one per line and pass `--expect-routes <file>`. This does not
+navigate directly; it asserts that the running UI exposed each route. An entry
+like `/orders/:id` is satisfied by `/orders/1042`. Missing routes appear in
+`coverage.unreachedRoutes` and make the run fail, which prevents absent fixture
+data from shrinking the coverage denominator invisibly. A later diff re-reads
+the manifest path stored in the baseline, so routes added to the file become
+assertions without repeating the flag.
+
 ## Apps behind a login
 
 If `load.likelyAuthWall` is true, the run describes the login page and nothing
@@ -118,7 +127,9 @@ greppable by `clickgraph-test`; say so if the user may need to clean them up.
 ## Reading the verdict
 
 `--json` prints a compact object, not the whole graph. Read `ok` and `verdict`
-first; they are the answer.
+first; they are the answer. Record `version` with the result. If a diff carries
+a `versionWarning`, its baseline was made by another clickgraph build (or by a
+legacy build with no provenance), so some differences may be tooling changes.
 
 From `walk`:
 
@@ -151,6 +162,10 @@ verdict string says so; do not translate it into "no issues found".
 controls nobody proved anything about. Never describe a run as verifying the
 whole UI. If coverage matters to the claim you are about to make, state the
 numbers.
+
+The same rule applies to `coverage.unreachedRoutes`: each one is a declared
+screen the walk never found. Fix the fixture or path into it before calling the
+run complete; a clean diff cannot erase an inherited route gap.
 
 Each skip carries `examples` explaining what the reason meant, and they are
 worth reading rather than counting. `unreachable` in particular covers two very

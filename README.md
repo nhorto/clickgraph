@@ -17,6 +17,7 @@ npm install && npx playwright install chromium && npm run build
 npm run fixture &                      # demo app with planted bugs
 node dist/cli.js walk http://localhost:4173     # explore, write baseline
 node dist/cli.js diff http://localhost:4173     # re-walk, report changes
+node dist/cli.js --version                    # identify the running build
 ```
 
 ### What a walk reports
@@ -58,6 +59,7 @@ context or skip the check. `ok` always agrees with the exit code.
 ```json
 {
   "ok": false,
+  "version": "0.1.0",
   "verdict": "of 28 interaction(s) walked, 1 errored and 1 produced no observable effect",
   "load": { "healthy": true, "errors": [], "interactiveFound": 12 },
   "findings": [
@@ -168,6 +170,54 @@ authorize destructive clicks. Repeat either explicitly after reviewing it. The
 diff warns before walking when the baseline used one and the current invocation
 does not.
 
+## Expected route coverage
+
+A walker can only count screens it discovers. If a detail page needs fixture
+data that is missing, it otherwise disappears from both the graph and the
+coverage denominator. Declare the routes the run is supposed to reach to turn
+that silent gap into a failing result:
+
+```text
+# routes.txt — one path per line
+/
+/orders
+/orders/:id
+/settings
+```
+
+```bash
+npx clickgraph walk http://localhost:5173 --expect-routes routes.txt
+```
+
+Paths are normalized the same way as graph routes, so a discovered
+`/orders/1042` satisfies `/orders/:id`. Query strings are ignored, hash routes
+are preserved, and blank lines or `#` comments are allowed. This is an
+assertion, not a navigation seed: clickgraph still has to reach every route
+through the running UI. Missing routes appear under `Not covered`, travel in
+JSON as `coverage.unreachedRoutes`, and make both `walk` and `diff` exit 1.
+
+The graph stores both the resolved routes and the manifest path. `diff` re-reads
+that inert text file, so adding a route later immediately expands the assertion;
+it cannot be frozen out by the old baseline. Pass `--no-expect-routes` to clear
+the assertion explicitly. A changed list produces the same
+configuration-mismatch warning as other coverage changes. Legacy baselines
+that record only a resolved list continue to inherit that list.
+
+## Versioned baselines
+
+Every new graph records both the graph-format version and the released
+clickgraph version that produced it. `clickgraph --version` (or `-v`) prints the
+compiled build; walk and diff JSON include it as `version`. When a diff reads a
+legacy baseline with no producer version, or a baseline written by a different
+version, it warns that detection changes may be tooling rather than app
+regressions. Old graphs remain readable.
+
+In a local checkout, every CLI command also compares `src/` timestamps with the
+compiled files it is about to run and warns when `dist/` is stale. `npm run
+build` refuses a package/source version mismatch. Released detection changes
+still rely on normal semantic-version discipline; provenance is not a hash of
+every source edit.
+
 ## Safety
 
 The walker clicks autonomously against a real app, so by default it refuses controls matching destructive patterns (delete, remove, sign out, pay, purchase, deactivate), skips off-origin links, and skips disabled controls. All of them are reported as *skipped with a reason* — never as passing. `--allow-dangerous` overrides, and should only be pointed at a disposable environment.
@@ -185,11 +235,13 @@ The walker clicks autonomously against a real app, so by default it refuses cont
 ./scripts/verify.sh
 ```
 
-Runs the fixture app through eight scenarios — unchanged (twice, for
+Runs the fixture app through eleven scenarios — unchanged (twice, for
 determinism), a broken interaction, a new feature with one dead control, the
-JSON verdict agreeing with the exit code, an app behind a login screen, and a
-form that drops its submission beside one that works, plus pre-walk hooks and
-baseline configuration replay. 41 checks, all passing as of the last commit.
+JSON verdict agreeing with the exit code, an app behind a login screen, a form
+that drops its submission beside one that works, pre-walk hooks, baseline
+configuration replay, build provenance, declared route coverage, and safely
+dismissed browser dialogs. 68 checks,
+all passing as of the last commit.
 
 ## Tested against real apps
 
@@ -217,6 +269,10 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
 - **An empty form's submit button is not a dead control.** Clicking it fires native validation, which refuses the submission and changes no DOM — indistinguishable from a button wired to nothing. The browser's own `checkValidity` settles it, and the form is reported as skipped until something fills it in.
 - **A form control holding its chosen value is doing its job.** A controlled framework select keeps the choice in the `value` property — no attribute changes, no mutation fires, and the chosen option's text is invisible to the content hash, so every such select read as dead. Value state is now its own effect signal. Inside a form it is benign: the submit is what consumes the choice, and the submit's edge is the proof. Outside a form it stays a finding — a standalone filter that holds the choice while filtering nothing is exactly the planted-defect case.
 - **Some effects live in browser chrome, and no snapshot will ever see them.** `window.print()` and a clipboard write have no page-side footprint at all — the sibling of the visual-only case, but looking harder cannot fix it. Shims installed before any page script runs report the invocation instead, which proves the wiring; `print` is swallowed rather than forwarded, because a real print dialog would hang an autonomous walk.
+- **A safely declined confirmation is still an observed effect.** Confirm, prompt,
+  and alert dialogs are recorded per action and dismissed so an autonomous walk
+  never authorizes the guarded branch. The edge says the dialog was raised and
+  that its accept branch remains unwalked, instead of calling the control dead.
 
 ## Layout
 

@@ -10,6 +10,9 @@
 #   F  a form is only judged once it has been filled in
 #   G  a pre-walk command runs, is recorded, and aborts clearly on failure
 #   H  diff inherits baseline settings and warns about explicit mismatches
+#   I  CLI, graph, and JSON output identify the clickgraph build that produced them
+#   J  declared routes expose screens that fixture state left unreachable
+#   K  a safely dismissed confirm dialog is observed, not called a dead control
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -41,11 +44,48 @@ check() {
   else echo "  FAIL: $3 (got $1, want $2)"; fail=$((fail+1)); fi
 }
 
+echo "I: build version provenance"
+PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+test "$(node dist/cli.js --version)" = "clickgraph $PACKAGE_VERSION"
+check "$?" "0" "--version prints the compiled clickgraph version"
+test "$(node dist/cli.js -v)" = "clickgraph $PACKAGE_VERSION"
+check "$?" "0" "-v prints the compiled clickgraph version"
+node -e '
+  Promise.all([import("./dist/version.js"), import("./dist/build.js")]).then(([
+    { CLICKGRAPH_VERSION }, { staleLocalBuildFiles },
+  ]) => {
+    if (CLICKGRAPH_VERSION !== require("./package.json").version) process.exit(1);
+    if (staleLocalBuildFiles().length !== 0) process.exit(1);
+  });
+'
+check "$?" "0" "the compiled version matches package.json and source is not newer than dist"
+node -e '
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clickgraph-stale-"));
+  fs.mkdirSync(path.join(root, "src"));
+  fs.mkdirSync(path.join(root, "dist"));
+  fs.writeFileSync(path.join(root, "src/example.ts"), "source");
+  fs.writeFileSync(path.join(root, "dist/example.js"), "build");
+  fs.utimesSync(path.join(root, "dist/example.js"), new Date(0), new Date(0));
+  import("./dist/build.js").then(({ staleLocalBuildFiles }) => {
+    if (JSON.stringify(staleLocalBuildFiles(root)) !== JSON.stringify(["src/example.ts"]))
+      process.exit(1);
+  });
+'
+check "$?" "0" "a local source file newer than dist is detected as a stale build"
+
 echo "Building baseline against the intact app..."
 start_fixture PORT="$PORT"
 rm -rf .uigraph
 node dist/cli.js walk "$URL" --quiet >/tmp/clickgraph-base.txt 2>&1
 check "$?" "0" "baseline walk succeeds"
+node -e '
+  const graph = require("./.uigraph/graph.json");
+  if (graph.clickgraphVersion !== require("./package.json").version) process.exit(1);
+'
+check "$?" "0" "the graph records which clickgraph build produced it"
 grep -q 'NO EFFECT.*"Export"' /tmp/clickgraph-base.txt; check "$?" "0" "finds the unwired Export button"
 grep -q 'ERROR.*"Save settings"' /tmp/clickgraph-base.txt; check "$?" "0" "finds the 500 on Save settings"
 grep -q 'NO EFFECT.*"Filter orders by region"' /tmp/clickgraph-base.txt
@@ -66,6 +106,17 @@ grep -q '"Print order"' /tmp/clickgraph-base.txt
 check "$?" "1" "does not flag the button whose effect is the print dialog"
 grep -q '"Copy order link"' /tmp/clickgraph-base.txt
 check "$?" "1" "does not flag the button whose effect is a clipboard write"
+grep -q '"Retire order"' /tmp/clickgraph-base.txt
+check "$?" "1" "does not flag a control whose confirm dialog was safely dismissed"
+node -e '
+  const graph = require("./.uigraph/graph.json");
+  const edge = graph.edges.find((candidate) => /Retire order/.test(candidate.action.name));
+  if (edge?.outcome.kind !== "state-changed") process.exit(1);
+  if (!/confirm dialog.*dismissed.*accept branch was not walked/.test(edge.outcome.note ?? ""))
+    process.exit(1);
+  if (edge.outcome.network.length !== 0) process.exit(1);
+'
+check "$?" "0" "records the dialog gate while leaving its accept branch unexecuted"
 # An in-form select with no change handler holds its choice for the submit to
 # consume (issue #5). The standalone region select stays a finding above —
 # there is no submit coming for it.
@@ -78,6 +129,31 @@ grep -q 'NO EFFECT.*"Beep"' /tmp/clickgraph-base.txt
 check "$?" "0" "walks the control that only exists after a self-loop, and finds it dead"
 grep -q '1 skipped (dangerous)' /tmp/clickgraph-base.txt; check "$?" "0" "refuses to click Delete account"
 grep -q '1 skipped (external)' /tmp/clickgraph-base.txt; check "$?" "0" "skips the off-origin link"
+
+node -e '
+  const fs = require("node:fs");
+  const graph = require("./.uigraph/graph.json");
+  fs.writeFileSync(
+    "/tmp/clickgraph-version-mismatch.json",
+    JSON.stringify({ ...graph, clickgraphVersion: "0.0.0-test" }),
+  );
+  delete graph.clickgraphVersion;
+  fs.writeFileSync("/tmp/clickgraph-version-legacy.json", JSON.stringify(graph));
+'
+node dist/cli.js show --json --baseline /tmp/clickgraph-version-legacy.json >/dev/null
+check "$?" "0" "a legacy graph without producer provenance remains readable"
+node dist/cli.js diff "$URL" --quiet --json --max-actions 0 \
+  --baseline /tmp/clickgraph-version-mismatch.json \
+  >/tmp/clickgraph-version-diff.json 2>/tmp/clickgraph-version-diff-err.txt
+grep -q 'baseline was walked with clickgraph 0.0.0-test' /tmp/clickgraph-version-diff-err.txt
+check "$?" "0" "a version mismatch is prominent before the diff walk"
+node -e '
+  const verdict = require("/tmp/clickgraph-version-diff.json");
+  if (verdict.version !== require("./package.json").version) process.exit(1);
+  if (verdict.baselineVersion !== "0.0.0-test") process.exit(1);
+  if (!/tooling, not app changes/.test(verdict.versionWarning ?? "")) process.exit(1);
+'
+check "$?" "0" "diff JSON carries both versions and the provenance warning"
 
 echo "A: unchanged app, run twice (determinism)"
 node dist/cli.js diff "$URL" --quiet >/dev/null 2>&1; check "$?" "0" "run 1 reports no change"
@@ -111,6 +187,8 @@ code=$?
 node -e '
   const v = require("/tmp/clickgraph-feat.json");
   const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.version !== require("./package.json").version) fail("diff verdict has no build version");
+  if (v.baselineVersion !== require("./package.json").version) fail("diff lost the baseline build version");
   if (v.ok !== false) fail("ok should be false while a regression stands");
   if (v.regressions.length !== 1) fail(`want 1 regression, got ${v.regressions.length}`);
   if (!/Archive/.test(v.regressions[0].summary)) fail("the dead new button is not the regression");
@@ -125,6 +203,7 @@ node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-alt.json >/tmp
 node -e '
   const v = require("/tmp/clickgraph-walk.json");
   const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.version !== require("./package.json").version) fail("walk verdict has no build version");
   if (v.ok !== true) fail("a healthy app that walked should be ok");
   // Named rather than counted, so adding a planted defect to the fixture does
   // not falsify a check that is still describing the truth.
@@ -286,6 +365,95 @@ check "$?" "0" "diff does not auto-execute a command stored in its baseline"
 grep -q 'repeat --pre explicitly.*stored commands are never auto-executed' \
   /tmp/clickgraph-pre-diff-err.txt
 check "$?" "0" "diff explains how to reproduce a baseline pre-walk hook safely"
+
+echo "J: expected route coverage"
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/orders" --quiet --json --max-depth 1 \
+  --expect-routes fixture/routes.txt --out /tmp/clickgraph-routes-ok.json \
+  >/tmp/clickgraph-routes-ok-verdict.json 2>/dev/null
+check "$?" "0" "declared routes all count as reached when fixture data exposes them"
+node -e '
+  const graph = require("/tmp/clickgraph-routes-ok.json");
+  const verdict = require("/tmp/clickgraph-routes-ok-verdict.json");
+  if (graph.config.expectedRoutes.length !== 7) process.exit(1);
+  if (graph.coverage.unreachedRoutes.length !== 0) process.exit(1);
+  if (verdict.coverage.unreachedRoutes.length !== 0) process.exit(1);
+'
+check "$?" "0" "graph and JSON record the resolved route expectations"
+
+start_fixture PORT="$PORT" EMPTY=1
+node dist/cli.js walk "$URL/orders" --quiet --json --max-depth 1 \
+  --expect-routes fixture/routes.txt --out /tmp/clickgraph-routes-missing.json \
+  >/tmp/clickgraph-routes-missing-verdict.json 2>/dev/null
+check "$?" "1" "an expected route hidden by missing data fails the walk"
+node -e '
+  const verdict = require("/tmp/clickgraph-routes-missing-verdict.json");
+  if (verdict.ok !== false) process.exit(1);
+  if (JSON.stringify(verdict.coverage.unreachedRoutes) !== JSON.stringify(["/orders/:id"]))
+    process.exit(1);
+'
+check "$?" "0" "JSON names the exact route that was never reached"
+node dist/cli.js show --baseline /tmp/clickgraph-routes-missing.json \
+  >/tmp/clickgraph-routes-missing-report.txt
+grep -q 'NOT REACHED.*/orders/:id' /tmp/clickgraph-routes-missing-report.txt
+check "$?" "0" "the human coverage report makes the missing route prominent"
+
+node dist/cli.js diff "$URL/orders" --quiet --json \
+  --baseline /tmp/clickgraph-routes-missing.json \
+  >/tmp/clickgraph-routes-missing-diff.json 2>/tmp/clickgraph-routes-missing-diff-err.txt
+check "$?" "1" "diff inherits route expectations and keeps an unchanged gap failing"
+node -e '
+  const verdict = require("/tmp/clickgraph-routes-missing-diff.json");
+  const changes = verdict.regressions.length + verdict.fixed.length + verdict.other.length;
+  if (changes !== 0 || verdict.coverage.unreachedRoutes[0] !== "/orders/:id") process.exit(1);
+'
+check "$?" "0" "a no-change diff cannot hide an inherited route gap"
+node -e '
+  Promise.all([import("./dist/graph.js"), import("./dist/report.js")]).then(([
+    { diffGraphs }, { reportDiff },
+  ]) => {
+    const graph = require("/tmp/clickgraph-routes-missing.json");
+    if (!/Expected routes not reached/.test(reportDiff(diffGraphs(graph, graph)))) process.exit(1);
+  });
+'
+check "$?" "0" "the public one-argument diff report cannot hide a route gap"
+test ! -s /tmp/clickgraph-routes-missing-diff-err.txt
+check "$?" "0" "inherited route expectations do not produce a mismatch warning"
+
+node dist/cli.js diff "$URL/orders" --quiet --json --max-actions 0 \
+  --no-expect-routes --baseline /tmp/clickgraph-routes-missing.json \
+  >/tmp/clickgraph-routes-cleared.json 2>/tmp/clickgraph-routes-cleared-err.txt
+node -e '
+  const verdict = require("/tmp/clickgraph-routes-cleared.json");
+  if (!verdict.configWarnings.some((warning) => /--expect-routes/.test(warning))) process.exit(1);
+'
+check "$?" "0" "explicitly clearing route expectations warns about the mismatch"
+
+node -e '
+  const fs = require("node:fs");
+  const graph = require("/tmp/clickgraph-routes-missing.json");
+  const manifest = "/tmp/clickgraph-routes-live.txt";
+  fs.writeFileSync(manifest, "/\n/orders\n/orders/:id\n/settings\n/signup\n/feedback\n/about\n");
+  graph.config.expectedRoutes = graph.config.expectedRoutes.filter((route) => route !== "/orders/:id");
+  graph.config.expectedRoutesFile = manifest;
+  graph.coverage.expectedRoutes = graph.config.expectedRoutes;
+  graph.coverage.unreachedRoutes = [];
+  fs.writeFileSync("/tmp/clickgraph-routes-evolving.json", JSON.stringify(graph));
+'
+node dist/cli.js diff "$URL/orders" --quiet --json \
+  --baseline /tmp/clickgraph-routes-evolving.json \
+  >/tmp/clickgraph-routes-evolving-diff.json 2>/tmp/clickgraph-routes-evolving-err.txt
+check "$?" "1" "diff re-reads a recorded manifest and catches a newly declared route"
+node -e '
+  const verdict = require("/tmp/clickgraph-routes-evolving-diff.json");
+  if (verdict.coverage.unreachedRoutes[0] !== "/orders/:id") process.exit(1);
+  if (!verdict.configWarnings.some((warning) => /route coverage/.test(warning))) process.exit(1);
+'
+check "$?" "0" "a changed route manifest is visible in coverage and config warnings"
+
+node dist/cli.js walk "$URL" --expect-routes /tmp/does-not-exist-routes.txt \
+  >/dev/null 2>/tmp/clickgraph-routes-invalid.txt
+check "$?" "2" "a missing expected-routes file is a usage error"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

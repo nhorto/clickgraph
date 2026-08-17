@@ -234,6 +234,9 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
   return {
     baselineWalkedAt: baseline.walkedAt,
     currentWalkedAt: current.walkedAt,
+    baselineClickgraphVersion: baseline.clickgraphVersion,
+    currentClickgraphVersion: current.clickgraphVersion,
+    currentUnreachedRoutes: current.coverage.unreachedRoutes ?? [],
     changes,
   };
 }

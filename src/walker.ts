@@ -6,11 +6,12 @@ import type {
   WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
+import { CLICKGRAPH_VERSION } from './version.js';
 import {
   ActionWatch, captureState, classifyOutcome, instrumentChromeEffects, resolve,
   type PageSnapshot,
 } from './observer.js';
-import { normalizeText } from './fingerprint.js';
+import { normalizeRoute, normalizeText } from './fingerprint.js';
 import { refusesFill, synthesize } from './formfill.js';
 
 /**
@@ -66,6 +67,7 @@ const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
   settleMs: 250,
   allowDangerous: false,
   fillForms: false,
+  expectedRoutes: [],
 };
 
 /** Run the caller's reset/setup command before opening the browser. */
@@ -315,6 +317,9 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   ) as Partial<WalkConfig>;
 
   const config: WalkConfig = { ...DEFAULTS, ...provided, baseUrl };
+  config.expectedRoutes = [...new Set((config.expectedRoutes ?? []).map((route) =>
+    normalizeRoute(new URL(route, baseUrl).href),
+  ))];
   const log = onProgress ?? (() => {});
 
   if (config.pre) await runPreWalk(config.pre, log);
@@ -754,7 +759,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
 
   markAlreadyApplied(edges);
 
+  const expectedRoutes = config.expectedRoutes ?? [];
+  const reachedRoutes = new Set(Object.values(nodes).map((node) => node.fingerprint.route));
+  const unreachedRoutes = expectedRoutes.filter((route) => !reachedRoutes.has(route));
+
   return {
+    clickgraphVersion: CLICKGRAPH_VERSION,
     version: GRAPH_VERSION,
     baseUrl,
     walkedAt: new Date().toISOString(),
@@ -768,6 +778,8 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       edgesUnwalked: unwalked,
       skipped,
       limitHit,
+      expectedRoutes,
+      unreachedRoutes,
     },
   };
 }
