@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { BrowserContext, Page, ConsoleMessage, Dialog, Request, Response } from 'playwright';
 import type { ElementDescriptor, NetworkCall, Outcome, Selector } from './types.js';
 import { computeFingerprint, nodeId } from './fingerprint.js';
+import { beginInjectedCapture, drainInjectedCapture, isInjected } from './fault.js';
 
 export interface PageSnapshot {
   url: string;
@@ -463,6 +464,7 @@ export class ActionWatch {
     // A fresh sink per action: whatever the shims report between here and
     // stop() belongs to this action alone.
     chromeEffectSink.set(page, []);
+    beginInjectedCapture(page);
   }
 
   stop() {
@@ -480,6 +482,7 @@ export class ActionWatch {
       network: this.network,
       consoleErrors: this.consoleErrors,
       httpErrors: this.httpErrors,
+      injectedFailures: drainInjectedCapture(this.page),
       chromeEffects,
       dialogs: this.dialogs,
     };
@@ -493,35 +496,57 @@ export function classifyOutcome(
     network: NetworkCall[];
     consoleErrors: string[];
     httpErrors: string[];
+    injectedFailures?: string[];
     chromeEffects?: string[];
     dialogs?: { type: string; message: string }[];
   },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
 ): Outcome {
+  const injected = watch.injectedFailures ?? [];
   const base: Omit<Outcome, 'kind'> = {
     urlBefore: before.url,
     urlAfter: after.url,
     network: watch.network,
     consoleErrors: watch.consoleErrors,
     httpErrors: watch.httpErrors,
+    ...(injected.length > 0 ? { injectedFailures: injected } : {}),
   };
+
+  // A failure the walk caused is not evidence about the app (issue #15). What
+  // it is evidence about is the app's RESPONSE, so an injected failure takes
+  // the same route a 4xx does below: judged by what the user saw, not by the
+  // status. Classifying it as an error instead would condemn every screen in a
+  // fault walk, including the ones handling it correctly.
+  const organic = watch.httpErrors.filter((e) => !isInjected(e, injected));
+  // A dropped connection surfaces as a console error with no status, so the
+  // console has to be filtered by the same test or `offline` mode reports every
+  // correctly-handled failure as an uncaught defect.
+  const organicConsole = injected.length === 0
+    ? watch.consoleErrors
+    : watch.consoleErrors.filter(
+        (e) => !/Failed to fetch|NetworkError|net::ERR_|clickgraph-injected-failure/i.test(e),
+      );
 
   // Not every failed request is a defect, and treating them alike buries the
   // real ones. A 5xx or an uncaught exception is a problem no matter what the
   // UI did. A 4xx often is not: apps legitimately use 404 to mean "this
   // optional thing does not exist", handle it, and carry on.
-  const serverErrors = watch.httpErrors.filter((e) => /^5\d\d /.test(e));
-  const clientErrors = watch.httpErrors.filter((e) => /^4\d\d /.test(e));
+  const serverErrors = organic.filter((e) => /^5\d\d /.test(e));
+  const clientErrors = [...organic.filter((e) => /^4\d\d /.test(e)), ...injected];
 
-  if (serverErrors.length > 0 || watch.consoleErrors.length > 0) {
-    return { ...base, kind: 'error', note: serverErrors[0] ?? watch.consoleErrors[0] };
+  if (serverErrors.length > 0 || organicConsole.length > 0) {
+    return { ...base, kind: 'error', note: serverErrors[0] ?? organicConsole[0] };
   }
 
   // A 4xx alongside a visible response means the app handled it. Record the
   // request in the outcome, but judge the interaction by what the user saw.
   const handled = clientErrors.length > 0
-    ? { note: `handled a failed request: ${clientErrors[0]}` }
+    ? {
+        note: injected.length > 0
+          ? `showed the user something when the request failed: ${clientErrors[0]}`
+          : `handled a failed request: ${clientErrors[0]}`,
+      }
     : {};
 
   if (before.url !== after.url) return { ...base, ...handled, kind: 'navigated' };
@@ -584,11 +609,18 @@ export function classifyOutcome(
 
   // A request failed and the user saw nothing happen. That silent failure is a
   // real defect, and it is the one case where a 4xx alone is worth reporting.
+  //
+  // Under fault injection this is the whole point of the run: the walk broke
+  // the request on purpose and the app rendered no banner, no retry, nothing.
+  // Whatever went wrong, the user was not told.
   if (clientErrors.length > 0) {
     return {
       ...base,
       kind: 'error',
-      note: `${clientErrors[0]} — and nothing visible changed`,
+      note: injected.length > 0
+        ? `the request failed (${clientErrors[0]}) and nothing visible changed — ` +
+          'the failure was swallowed, so the user was told nothing'
+        : `${clientErrors[0]} — and nothing visible changed`,
     };
   }
   if (watch.network.length > 0) {

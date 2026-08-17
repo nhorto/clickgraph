@@ -111,6 +111,17 @@ const routes = {
     <button id="print-order" data-testid="print-order">Print order</button>
     <button id="copy-link" data-testid="copy-link">Copy order link</button>
     <button id="retire-order" data-testid="retire-order">Retire order</button>
+    <!--
+      The pair issue #15 exists for. While the API answers, these two are
+      indistinguishable: both fire one request and neither is a finding. Break
+      the request and they separate — "Sync orders" leaves the user staring at
+      an unchanged screen, "Reload orders" says what went wrong. No healthy
+      walk can tell them apart, which is exactly why the error path had to
+      become reachable.
+    -->
+    <button id="sync-orders" data-testid="sync-orders">Sync orders</button>
+    <button id="reload-orders" data-testid="reload-orders">Reload orders</button>
+    <p id="orders-error" role="alert"></p>
     ${process.env.FEATURE === '1' ? `
     <button id="print" data-testid="print">Print invoice</button>
     <button id="archive" data-testid="archive">Archive</button>` : ''}
@@ -145,6 +156,25 @@ const routes = {
         if (!window.confirm('Retire this order?')) return;
         await fetch('/api/retire', { method: 'POST' });
         document.getElementById('status').textContent = 'Order retired';
+      });
+      // Swallows its own failure: the rejection is caught and discarded, so a
+      // broken API produces a screen that never changes. Under a healthy walk
+      // this is network-only — a request fired, nothing visible moved — which
+      // is not a finding, because a great many working controls look like that.
+      document.getElementById('sync-orders').addEventListener('click', () => {
+        fetch('/api/orders').catch(() => {});
+      });
+      // Handles it. Same request, same silence on success; the difference only
+      // exists on the failure branch.
+      document.getElementById('reload-orders').addEventListener('click', async () => {
+        try {
+          const res = await fetch('/api/orders');
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          document.getElementById('orders-error').textContent = '';
+        } catch (err) {
+          document.getElementById('orders-error').textContent =
+            'Could not reload orders: ' + err.message;
+        }
       });
       // "Zoom In" works, and proves the opposite case: a real effect that no
       // amount of reading the text or the control list can see.

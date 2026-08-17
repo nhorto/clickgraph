@@ -10,6 +10,8 @@
 #   F  a form is only judged once it has been filled in
 #   G  a pre-walk command runs, is recorded, and aborts clearly on failure
 #   H  diff inherits baseline settings and warns about explicit mismatches
+#   I  a failure the walk injects reaches UI no healthy walk can see, and
+#      separates the control that swallows it from the one that reports it
 #   I  CLI, graph, and JSON output identify the clickgraph build that produced them
 #   J  declared routes expose screens that fixture state left unreachable
 #   K  a safely dismissed confirm dialog is observed, not called a dead control
@@ -454,6 +456,84 @@ check "$?" "0" "a changed route manifest is visible in coverage and config warni
 node dist/cli.js walk "$URL" --expect-routes /tmp/does-not-exist-routes.txt \
   >/dev/null 2>/tmp/clickgraph-routes-invalid.txt
 check "$?" "2" "a missing expected-routes file is a usage error"
+
+echo "I: fault injection reaches the UI a healthy walk cannot (issue #15)"
+# The premise: "Sync orders" swallows its failure and "Reload orders" renders a
+# banner. While the API answers they are indistinguishable — both fire one
+# request, neither is a finding. Only breaking the request separates them.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-fault-base.json \
+  >/tmp/clickgraph-fault-healthy.json 2>/dev/null
+check "$?" "0" "the healthy walk still succeeds with the error-path controls present"
+node -e '
+  const v = require("/tmp/clickgraph-fault-healthy.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const names = v.findings.map((f) => f.control).join(" ");
+  if (/Sync orders|Reload orders/.test(names))
+    fail(`a healthy walk should not be able to tell these apart: ${names}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "neither error-path control is a finding while requests succeed"
+
+node dist/cli.js walk "$URL" --quiet --json --fail-requests "/api/orders@503" \
+  --out /tmp/clickgraph-fault-graph.json >/tmp/clickgraph-fault-out.json 2>/dev/null
+check "$?" "0" "a fault walk is not condemned for the failures it was asked to cause"
+node -e '
+  const v = require("/tmp/clickgraph-fault-out.json");
+  const g = require("/tmp/clickgraph-fault-graph.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  // The finding the feature exists for.
+  const swallowed = v.findings.find((f) => /Sync orders/.test(f.control));
+  if (!swallowed) fail("the control that swallows its failure was not caught");
+  if (swallowed.severity !== "error") fail(`want severity error, got ${swallowed.severity}`);
+  if (!/swallowed/.test(swallowed.detail)) fail(`the detail does not say what went wrong: ${swallowed.detail}`);
+  // The control that handles the failure correctly must NOT be reported. A
+  // fault mode that flags working error handling is worse than none: every
+  // error banner in the app becomes a false positive.
+  if (v.findings.some((f) => /Reload orders/.test(f.control)))
+    fail("the control that renders an error banner was reported as broken");
+  // The app own 500 must survive alongside hundreds of injected ones.
+  if (!v.findings.some((f) => /Save settings/.test(f.control)))
+    fail("the app real defect was buried among the injected failures");
+  if (!v.load.healthy) fail("injected failures must not make the load look unhealthy");
+  // A fault walk and a healthy walk describe different apps; the graph has to
+  // say which one it is or the two get crossed by accident.
+  if (!g.config.fault || g.config.fault.pattern !== "/api/orders") fail("the graph does not record its fault");
+  if (g.config.fault.status !== 503) fail("the graph does not record the injected status");
+  if (!/failing/.test(v.verdict)) fail(`the verdict does not mention the fault: ${v.verdict}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "catches the swallowed failure, clears the handled one, keeps the real defect"
+
+# Reproducibility: a diff must inherit the fault, or an unchanged app reads as
+# regressed everywhere its error UI used to be.
+node dist/cli.js diff "$URL" --quiet --json --baseline /tmp/clickgraph-fault-graph.json \
+  >/tmp/clickgraph-fault-diff.json 2>/tmp/clickgraph-fault-diff-err.txt
+check "$?" "0" "a diff inherits the baseline fault and reports no change"
+test ! -s /tmp/clickgraph-fault-diff-err.txt
+check "$?" "0" "an inherited fault produces no warning"
+
+node dist/cli.js diff "$URL" --quiet --json --baseline /tmp/clickgraph-fault-graph.json \
+  --no-fail-requests >/tmp/clickgraph-fault-cross.json 2>/tmp/clickgraph-fault-cross-err.txt
+grep -q 'broken-app baseline' /tmp/clickgraph-fault-cross-err.txt
+check "$?" "0" "crossing a healthy walk with a fault baseline is warned about explicitly"
+
+# Method scoping: failing every request usually leaves nothing on screen to
+# click, so the useful walks break writes and let reads through.
+node -e '
+  const { parseFaultSpec } = require("/Users/nicholashorton/Documents/clickgraph/dist/fault.js");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const bare = parseFaultSpec("/api/*");
+  if (bare.status !== 500) fail("a bare pattern should default to 500");
+  const scoped = parseFaultSpec("POST,PUT /api/*@offline");
+  if (scoped.status !== "offline") fail("offline was not parsed");
+  if (scoped.methods.join(",") !== "POST,PUT") fail(`methods not parsed: ${scoped.methods}`);
+  if (scoped.pattern !== "/api/*") fail(`pattern not parsed: ${scoped.pattern}`);
+  for (const bad of ["", "/api/*@200", "/api/*@nope"]) {
+    let threw = false;
+    try { parseFaultSpec(bad); } catch { threw = true; }
+    if (!threw) fail(`${JSON.stringify(bad)} should be rejected, not walked`);
+  }
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

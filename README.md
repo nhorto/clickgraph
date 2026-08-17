@@ -203,6 +203,56 @@ the assertion explicitly. A changed list produces the same
 configuration-mismatch warning as other coverage changes. Legacy baselines
 that record only a resolved list continue to inherit that list.
 
+## The failure paths
+
+A walk drives an app whose requests all succeed, which makes an entire class of
+UI structurally unreachable: error banners, retry buttons, offline and queued
+states, and the empty-vs-errored distinction. Not skipped, not unwalked —
+invisible. A screen with a fully built error path walks as if it had none.
+
+`--fail-requests` breaks matching requests for the whole walk, so that UI
+becomes ordinary walkable state:
+
+```
+clickgraph walk http://localhost:3000 --fail-requests "/api/*"          # 500
+clickgraph walk http://localhost:3000 --fail-requests "/api/*@503"
+clickgraph walk http://localhost:3000 --fail-requests "/api/*@offline"  # dropped
+clickgraph walk http://localhost:3000 --fail-requests "POST,PUT /api/*"
+```
+
+The method form matters more than it looks: failing *everything* usually leaves
+no screen to click, so the useful walks break writes and let reads through.
+
+**The judgment inverts.** Normally a control that produces no observable effect
+is the finding. Here, a control that fires a request the walk deliberately broke
+and *still* changes nothing on screen swallowed the failure — the user was told
+nothing. A control that renders a banner instead is working, and is not
+reported. Failures the walk caused are held apart from the app's own in
+`injectedFailures`, so a fault run neither condemns itself on load nor buries a
+real 500 under a hundred deliberate ones.
+
+Two controls that fire the same request are indistinguishable while it succeeds.
+Only breaking it separates them:
+
+```
+healthy walk    Sync orders  → network-only     Reload orders → network-only
+fault walk      Sync orders  → ERROR: the request failed and nothing visible
+                               changed — the failure was swallowed
+                Reload orders → showed the user something when the request failed
+```
+
+**A fault walk needs its own baseline.** It describes a different app from the
+healthy one, so crossing them reports every error screen as missing. `diff`
+inherits the baseline's fault automatically — unlike `--pre` and
+`--allow-dangerous`, replaying it only makes requests fail, which is strictly
+safer than the walk it modifies — and dropping it with `--no-fail-requests`
+produces the loudest configuration warning the tool emits.
+
+What this does *not* catch: an app that renders "Refreshed" after a failed
+request. The walk sees that the screen changed, not what it now claims. Telling
+a truthful banner from a lying one needs semantics, and this is deliberately
+structural.
+
 ## Versioned baselines
 
 Every new graph records both the graph-format version and the released

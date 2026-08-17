@@ -13,6 +13,7 @@ import {
 } from './observer.js';
 import { normalizeRoute, normalizeText } from './fingerprint.js';
 import { refusesFill, synthesize } from './formfill.js';
+import { faultSpec, installFault, isInjected } from './fault.js';
 
 /**
  * A control that leads to state X does nothing when clicked from state X — it
@@ -347,6 +348,13 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   // Before any page exists: the shims must be in place before the first app
   // script runs, or a print on load would go unseen.
   await instrumentChromeEffects(context);
+  // Same reason, and one more: a fault installed after the first navigation
+  // would let the entry screen load healthily and then break everything after
+  // it, so the walk would compare two different apps to each other.
+  if (config.fault) {
+    await installFault(context, config.fault);
+    log(`failing requests matching ${faultSpec(config.fault)}`);
+  }
   const page = await context.newPage();
 
   // Autonomous walking must never hang on a modal or leak tabs.
@@ -382,8 +390,19 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     if (!loaded) throw new Error(`could not load ${baseUrl}`);
     const entry = await captureState(page);
     load = {
-      consoleErrors: observedLoad.consoleErrors,
-      httpErrors: observedLoad.httpErrors,
+      // The walk's own sabotage is split out of both lists, so a fault run is
+      // not judged unhealthy on arrival for doing what it was told (issue #15).
+      consoleErrors: config.fault
+        ? observedLoad.consoleErrors.filter(
+            (e) => !/Failed to fetch|NetworkError|net::ERR_|clickgraph-injected-failure/i.test(e),
+          )
+        : observedLoad.consoleErrors,
+      httpErrors: observedLoad.httpErrors.filter(
+        (e) => !isInjected(e, observedLoad.injectedFailures),
+      ),
+      ...(observedLoad.injectedFailures.length > 0
+        ? { injectedFailures: observedLoad.injectedFailures }
+        : {}),
       interactiveFound: entry.elements.length,
       likelyAuthWall: looksLikeAuthWall(entry.url, entry.elements),
     };

@@ -13,6 +13,7 @@
 
 import type { GraphDiff, UIGraph } from './types.js';
 import { actionLabel, nodeLabel } from './graph.js';
+import { faultSpec } from './fault.js';
 import { clickgraphVersionWarning } from './version.js';
 
 export interface VerdictFinding {
@@ -120,6 +121,8 @@ export function loadIsHealthy(graph: UIGraph): boolean {
 export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   const healthy = loadIsHealthy(graph);
   const nothingWalked = graph.coverage.edgesWalked === 0;
+  /** Named in every verdict sentence a fault run can produce, not just the clean one. */
+  const fault = graph.config?.fault ? faultSpec(graph.config.fault) : undefined;
   const unreachedRoutes = graph.coverage.unreachedRoutes ?? [];
 
   const findings: VerdictFinding[] = graph.edges
@@ -151,7 +154,15 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   } else if (unreachedRoutes.length > 0) {
     verdict = `${unreachedRoutes.length} expected route(s) were not reached: ${unreachedRoutes.join(', ')}`;
   } else if (findings.length === 0) {
-    verdict = `${graph.coverage.edgesWalked} interaction(s) across ${graph.coverage.statesFound} state(s) all produced an observable effect`;
+    // Under fault injection "all produced an observable effect" would be a
+    // true sentence that answers the wrong question. What the run proves is
+    // that nothing failed silently, and the verdict has to say so or an agent
+    // reads it as an ordinary clean walk of a healthy app.
+    verdict = fault
+      ? `${graph.coverage.edgesWalked} interaction(s) across ${graph.coverage.statesFound} state(s) ` +
+        `were walked with ${fault} failing, and every one of them showed ` +
+        'the user something — no failure was swallowed'
+      : `${graph.coverage.edgesWalked} interaction(s) across ${graph.coverage.statesFound} state(s) all produced an observable effect`;
   } else {
     const errors = findings.filter((f) => f.severity === 'error').length;
     const dead = findings.length - errors;
@@ -159,7 +170,15 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
       errors > 0 ? `${errors} errored` : '',
       dead > 0 ? `${dead} produced no observable effect` : '',
     ].filter(Boolean);
-    verdict = `of ${graph.coverage.edgesWalked} interaction(s) walked, ${parts.join(' and ')}`;
+    // The fault has to be named here too, not only when the run comes back
+    // clean. "2 errored" on a fault walk is unreadable on its own: an agent
+    // cannot tell an app that broke from an app the walk broke on purpose,
+    // and those call for opposite responses.
+    verdict = fault
+      ? `of ${graph.coverage.edgesWalked} interaction(s) walked with ${fault} failing, ` +
+        `${parts.join(' and ')} — an error here means the app showed the user nothing ` +
+        'when the request failed'
+      : `of ${graph.coverage.edgesWalked} interaction(s) walked, ${parts.join(' and ')}`;
   }
 
   return {
