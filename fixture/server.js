@@ -26,9 +26,15 @@
  *      its "Beep" button exists only after a self-loop — the class of control
  *      that used to be walked never and counted nowhere (issue #8). Beep is
  *      unwired, so a correct walk must reach it AND report it dead.
+ *  12. /orders "Retire order" raises a confirm dialog. The safe decline branch
+ *      is observable browser chrome, not a dead control (issue #17).
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
+ *
+ * Run with EMPTY=1 to omit the only order row from /orders while keeping the
+ * /orders/1042 page available by direct address. This simulates an app whose
+ * fixture data is missing, making a real screen undiscoverable to the walker.
  *
  * Run with AUTH=1 to put the whole app behind a login screen, so the walker can
  * be checked against the case it used to get wrong: without a session it walks
@@ -38,6 +44,7 @@ import { createServer } from 'node:http';
 
 const PORT = Number(process.env.PORT ?? 4173);
 const BREAK = process.env.BREAK === '1';
+const EMPTY = process.env.EMPTY === '1';
 const AUTH = process.env.AUTH === '1';
 
 const LOGIN_PAGE = `<!doctype html>
@@ -85,7 +92,7 @@ const routes = {
 
   '/orders': page('Orders', `
     <h1>Orders</h1>
-    <ul><li><a href="/orders/1042" data-testid="order-link"${BREAK ? ' onclick="return false"' : ''}>Order #1042</a></li></ul>
+    ${EMPTY ? '' : `<ul><li><a href="/orders/1042" data-testid="order-link"${BREAK ? ' onclick="return false"' : ''}>Order #1042</a></li></ul>`}
     <label>Status
       <select id="status-filter" data-testid="status-filter" aria-label="Filter orders by status">
         <option value="all">All</option>
@@ -103,6 +110,7 @@ const routes = {
     <button id="refresh" data-testid="refresh">Refresh</button>
     <button id="print-order" data-testid="print-order">Print order</button>
     <button id="copy-link" data-testid="copy-link">Copy order link</button>
+    <button id="retire-order" data-testid="retire-order">Retire order</button>
     ${process.env.FEATURE === '1' ? `
     <button id="print" data-testid="print">Print invoice</button>
     <button id="archive" data-testid="archive">Archive</button>` : ''}
@@ -132,6 +140,11 @@ const routes = {
       document.getElementById('print-order').addEventListener('click', () => window.print());
       document.getElementById('copy-link').addEventListener('click', () => {
         navigator.clipboard?.writeText(location.href)?.catch(() => {});
+      });
+      document.getElementById('retire-order').addEventListener('click', async () => {
+        if (!window.confirm('Retire this order?')) return;
+        await fetch('/api/retire', { method: 'POST' });
+        document.getElementById('status').textContent = 'Order retired';
       });
       // "Zoom In" works, and proves the opposite case: a real effect that no
       // amount of reading the text or the control list can see.

@@ -8,7 +8,7 @@
   },
   "main": "./dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/check-version.mjs && tsc",
     "dev": "tsc --watch",
     "fixture": "node fixture/server.js"
   },

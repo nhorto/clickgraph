@@ -1,5 +1,6 @@
 import type { GraphDiff, UIGraph, OutcomeKind } from './types.js';
 import { actionLabel, nodeLabel } from './graph.js';
+import { clickgraphVersionWarning } from './version.js';
 
 const c = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
@@ -118,10 +119,20 @@ export function reportWalk(graph: UIGraph): string {
   // Coverage honesty: always state what was NOT covered, never imply totality.
   lines.push('');
   lines.push(c.bold('Not covered'));
+  const expectedRoutes = coverage.expectedRoutes ?? [];
+  const unreachedRoutes = coverage.unreachedRoutes ?? [];
+  if (expectedRoutes.length > 0) {
+    lines.push(
+      `  Expected routes: ${expectedRoutes.length - unreachedRoutes.length}/${expectedRoutes.length} reached`,
+    );
+    for (const route of unreachedRoutes) lines.push(c.red(`  NOT REACHED  ${route}`));
+  }
   if (coverage.edgesWalked === 0) {
     // Never let "no controls found" read as "everything passed".
     lines.push(c.yellow('  nothing was walked — this run proves nothing about the app'));
-  } else if (coverage.edgesUnwalked === 0 && coverage.skipped.length === 0) {
+  } else if (
+    coverage.edgesUnwalked === 0 && coverage.skipped.length === 0 && unreachedRoutes.length === 0
+  ) {
     lines.push(c.dim('  nothing — every control found was exercised'));
   } else {
     if (coverage.edgesUnwalked > 0) {
@@ -146,7 +157,11 @@ export function reportWalk(graph: UIGraph): string {
   return lines.join('\n');
 }
 
-export function reportDiff(diff: GraphDiff): string {
+export function reportDiff(
+  diff: GraphDiff,
+  current?: UIGraph,
+  options: { showVersionWarning?: boolean } = {},
+): string {
   const lines: string[] = [];
   const regressions = diff.changes.filter((ch) => ch.severity === 'regression');
   const progressions = diff.changes.filter((ch) => ch.severity === 'progression');
@@ -158,10 +173,27 @@ export function reportDiff(diff: GraphDiff): string {
   lines.push(c.dim(`  current  ${diff.currentWalkedAt}`));
   lines.push('');
 
-  if (diff.changes.length === 0) {
+  const producerWarning = clickgraphVersionWarning(
+    diff.baselineClickgraphVersion,
+    diff.currentClickgraphVersion,
+  );
+  if (producerWarning && options.showVersionWarning !== false) {
+    lines.push(c.yellow(c.bold('Tool version note')));
+    lines.push(`  ${producerWarning}`);
+    lines.push('');
+  }
+
+  const unreachedRoutes = current?.coverage.unreachedRoutes ?? diff.currentUnreachedRoutes ?? [];
+
+  if (diff.changes.length === 0 && unreachedRoutes.length === 0) {
     lines.push(c.green('  No change. Every walked interaction behaves as it did in the baseline.'));
     lines.push('');
     return lines.join('\n');
+  }
+
+  if (diff.changes.length === 0) {
+    lines.push(c.dim('  No interaction changes from the baseline.'));
+    lines.push('');
   }
 
   const section = (title: string, items: typeof diff.changes, color: (s: string) => string) => {
@@ -177,6 +209,12 @@ export function reportDiff(diff: GraphDiff): string {
   section(`Regressions (${regressions.length})`, regressions, c.red);
   section(`Fixed (${progressions.length})`, progressions, c.green);
   section(`Other changes (${info.length})`, info, c.cyan);
+
+  if (unreachedRoutes.length > 0) {
+    lines.push(c.red(c.bold(`Expected routes not reached (${unreachedRoutes.length})`)));
+    for (const route of unreachedRoutes) lines.push(`  ${c.red('•')} ${route}`);
+    lines.push('');
+  }
 
   return lines.join('\n');
 }

@@ -161,6 +161,10 @@ export interface Coverage {
   skipped: SkippedElement[];
   /** Which budget stopped the walk, if any. null means the walk ran to completion. */
   limitHit: string | null;
+  /** Routes the caller declared should be reachable in this walk. */
+  expectedRoutes?: string[];
+  /** Declared routes for which the walk discovered no node. */
+  unreachedRoutes?: string[];
 }
 
 export interface WalkConfig {
@@ -190,6 +194,10 @@ export interface WalkConfig {
    * must never be copied into an artifact that gets committed.
    */
   storageState?: string;
+  /** Normalized routes the resulting graph is expected to contain. */
+  expectedRoutes?: string[];
+  /** Route manifest to re-read on diff so newly declared screens are asserted. */
+  expectedRoutesFile?: string;
 }
 
 /**
@@ -213,6 +221,12 @@ export interface LoadHealth {
 }
 
 export interface UIGraph {
+  /**
+   * Version of clickgraph that produced this graph. Optional so graphs written
+   * before producer provenance was added remain readable.
+   */
+  clickgraphVersion?: string;
+  /** Version of the graph file format, independent of the producing build. */
   version: string;
   baseUrl: string;
   walkedAt: string;
@@ -246,5 +260,10 @@ export interface Change {
 export interface GraphDiff {
   baselineWalkedAt: string;
   currentWalkedAt: string;
+  /** Missing when the baseline predates producer-version provenance. */
+  baselineClickgraphVersion?: string;
+  currentClickgraphVersion?: string;
+  /** Current route gaps, carried so one-argument reportDiff calls stay honest. */
+  currentUnreachedRoutes?: string[];
   changes: Change[];
 }

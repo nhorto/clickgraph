@@ -1,0 +1,7 @@
+/
+/orders
+/orders/:id
+/settings
+/signup
+/feedback
+/about

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BrowserContext, Page, ConsoleMessage, Request, Response } from 'playwright';
+import type { BrowserContext, Page, ConsoleMessage, Dialog, Request, Response } from 'playwright';
 import type { ElementDescriptor, NetworkCall, Outcome, Selector } from './types.js';
 import { computeFingerprint, nodeId } from './fingerprint.js';
 
@@ -417,6 +417,7 @@ export class ActionWatch {
   private consoleErrors: string[] = [];
   private httpErrors: string[] = [];
   private statuses = new Map<string, number>();
+  private dialogs: { type: string; message: string }[] = [];
 
   private onRequest = (req: Request) => {
     const type = req.resourceType();
@@ -449,11 +450,16 @@ export class ActionWatch {
     this.consoleErrors.push(`uncaught: ${err.message.slice(0, 200)}`);
   };
 
+  private onDialog = (dialog: Dialog) => {
+    this.dialogs.push({ type: dialog.type(), message: dialog.message().slice(0, 200) });
+  };
+
   constructor(private page: Page) {
     page.on('request', this.onRequest);
     page.on('response', this.onResponse);
     page.on('console', this.onConsole);
     page.on('pageerror', this.onPageError);
+    page.on('dialog', this.onDialog);
     // A fresh sink per action: whatever the shims report between here and
     // stop() belongs to this action alone.
     chromeEffectSink.set(page, []);
@@ -464,6 +470,7 @@ export class ActionWatch {
     this.page.off('response', this.onResponse);
     this.page.off('console', this.onConsole);
     this.page.off('pageerror', this.onPageError);
+    this.page.off('dialog', this.onDialog);
     for (const call of this.network) {
       call.status = this.statuses.get(call.url) ?? null;
     }
@@ -474,6 +481,7 @@ export class ActionWatch {
       consoleErrors: this.consoleErrors,
       httpErrors: this.httpErrors,
       chromeEffects,
+      dialogs: this.dialogs,
     };
   }
 }
@@ -486,6 +494,7 @@ export function classifyOutcome(
     consoleErrors: string[];
     httpErrors: string[];
     chromeEffects?: string[];
+    dialogs?: { type: string; message: string }[];
   },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
@@ -555,6 +564,21 @@ export function classifyOutcome(
       kind: 'state-changed',
       note: `invoked ${[...new Set(watch.chromeEffects)].join(', ')} — ` +
         'browser chrome, which no page snapshot can see',
+    };
+  }
+
+  // confirm/prompt/alert are browser chrome too. The walker dismisses them so
+  // an autonomous run never authorizes the guarded action, but raising the
+  // dialog proves the control is wired. Calling that a dead control is false;
+  // record the safe decline branch and say what remains unwalked (issue #17).
+  if (watch.dialogs && watch.dialogs.length > 0) {
+    const dialog = watch.dialogs[0];
+    const message = dialog.message ? `: ${JSON.stringify(dialog.message)}` : '';
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: `raised a ${dialog.type} dialog${message}; it was dismissed, so its accept branch was not walked`,
     };
   }
 
