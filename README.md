@@ -223,6 +223,12 @@ clickgraph walk http://localhost:3000 --fail-requests "POST,PUT /api/*"
 The method form matters more than it looks: failing *everything* usually leaves
 no screen to click, so the useful walks break writes and let reads through.
 
+**Prefer a path over a method when the app has one.** "Writes are POSTs" is not
+true everywhere — the first real app this ran against sends its queries over
+POST as well, so `POST /api/*` broke the reads, left every screen empty and cut
+coverage from 15 states to 9. `--fail-requests "/api/commands/*"` was the walk
+that actually proved something.
+
 **The judgment inverts.** Normally a control that produces no observable effect
 is the finding. Here, a control that fires a request the walk deliberately broke
 and *still* changes nothing on screen swallowed the failure — the user was told
@@ -247,6 +253,13 @@ inherits the baseline's fault automatically — unlike `--pre` and
 `--allow-dangerous`, replaying it only makes requests fail, which is strictly
 safer than the walk it modifies — and dropping it with `--no-fail-requests`
 produces the loudest configuration warning the tool emits.
+
+**Read a fault walk against the healthy one, never alone.** Breaking writes
+shrinks the data as the walk goes, so a control that operates on rows the walk
+failed to create reads as dead when it is fine — a "Group by" that works on a
+populated table has nothing to group once the creates fail. A finding that is
+`no-effect` in the fault walk and `state-changed` in the healthy one is about
+the missing data, not the control.
 
 What this does *not* catch: an app that renders "Refreshed" after a failed
 request. The walk sees that the screen changed, not what it now claims. Telling
