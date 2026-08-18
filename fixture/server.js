@@ -42,6 +42,18 @@
  *      app knows into the lookup field first (issue #20). A synthesized value
  *      lands on "no order with that code", where it does not exist at all, so
  *      a walk without --field reports a clean screen and means it.
+ *  16. /people/new — a create-a-person form whose submit is disabled until
+ *      every field is filled, one of them a password (issue #34). Filling is
+ *      the only thing that enables the submit, and reaching the submit is what
+ *      triggers filling, so a walk that skips disabled controls first can open
+ *      it from neither end. Declared values must fill and submit it; without
+ *      them it must be refused once, against the submit, with the reason said
+ *      out loud rather than left to be inferred from a run that exits 0.
+ *  17. /invite "Send invite" — the form the walk is right to leave shut. It
+ *      un-disables only for a code no synthesized value can guess, so a
+ *      correct walk fills it, re-reads the submit, finds it still disabled and
+ *      says so. Clicking it anyway would report a working form as a dead
+ *      control, which is the failure the fix for 16 must not trade into.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.

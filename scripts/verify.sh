@@ -1047,6 +1047,100 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the field spec parses, refuses nonsense, and overrides only the password rule"
 
+echo "R: a form whose submit is disabled until it is filled (issue #34)"
+# The premise: /people/new disables "Add person" until every field is
+# non-empty, and one of those fields is a password. Filling is what un-disables
+# the submit, and reaching the submit is what triggers filling — so a walker
+# that skips disabled controls before it fills forms can never open the form
+# from either end. Every create-account, invite-user and change-password flow
+# in any app is this shape, and the whole of it went missing behind an exit 0.
+#
+# Walked from the front door rather than from the form: entering directly on a
+# page that holds a password field trips the login-wall heuristic, which is a
+# separate matter from whether the form can be filled.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL" --quiet --json --fill-forms --max-depth 2 \
+  --out /tmp/clickgraph-pwform-blind.json >/tmp/clickgraph-pwform-blind-out.json 2>/dev/null
+check "$?" "0" "a walk that declares no field values still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-pwform-blind-out.json");
+  const g = require("/tmp/clickgraph-pwform-blind.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const at = (route) => g.coverage.skipped.filter((s) => s.nodeId.startsWith(route));
+  // The conservative default is the point: an undeclared password is a
+  // credential the walk has no business inventing, so the form is left alone.
+  if (g.edges.some((e) => e.action.kind === "fill" && /Add person/.test(e.action.selector.label)))
+    fail("a form containing a password was submitted without the password being declared");
+  // What changed. The submit used to be filed as a bare `disabled` with no
+  // reason, which is how a create-account flow that was never exercised read
+  // as a clean sweep.
+  const submit = at("/people/new").find((s) => /Add person/.test(s.label));
+  if (!submit) fail("the submit was not reported as skipped at all");
+  if (!/password field is never typed into/.test(submit.detail ?? ""))
+    fail(`the refusal does not name the password as its reason: ${JSON.stringify(submit)}`);
+  if (!/3 field\(s\) left unfilled/.test(submit.detail ?? ""))
+    fail(`the refusal does not say how much of the form went unwalked: ${JSON.stringify(submit)}`);
+  // The fields are still accounted for one by one — that is issue #19 keeping
+  // coverage honest, and it must not regress. What changed is what they say:
+  // they point back at the form that was turned away, where before the fix
+  // they blamed themselves for responding to typing rather than to a click.
+  for (const want of ["Name", "Email", "Password"]) {
+    const f = at("/people/new").find((s) => s.label === `textbox "${want}"`);
+    if (!f) fail(`${want} vanished from coverage instead of being accounted for`);
+    if (!/its form was never submitted/.test(f.detail ?? ""))
+      fail(`${want} does not point back at its unsubmitted form: ${JSON.stringify(f)}`);
+  }
+  // The other side of the fix: a form the walk is right to leave shut. It must
+  // be filled, re-read, and reported — never clicked while still disabled,
+  // which would blame the app for a door the walk could not open.
+  const shut = at("/invite").find((s) => /Send invite/.test(s.label));
+  if (!shut) fail("the submit that stayed disabled was not reported at all");
+  if (!/still disabled after filling/.test(shut.detail ?? ""))
+    fail(`the skip does not say the fill was tried first: ${JSON.stringify(shut)}`);
+  if (v.findings.some((f) => /Send invite|Add person/.test(f.control)))
+    fail("a submit that never became enabled was reported as a dead control");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "refuses both forms with the reason attached, and calls neither one dead"
+
+node dist/cli.js walk "$URL" --quiet --json --fill-forms --max-depth 2 \
+  --field '[data-testid="person-name"]=Walked Person' \
+  --field '[data-testid="person-email"]=walked@example.com' \
+  --field '[data-testid="person-password"]=a-real-password' \
+  --field '[data-testid="invite-code"]=ACME-4242' \
+  --out /tmp/clickgraph-pwform.json >/tmp/clickgraph-pwform-out.json 2>/dev/null
+check "$?" "0" "declaring the values opens both forms the walk had refused"
+node -e '
+  const g = require("/tmp/clickgraph-pwform.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  // Every one of these came back NEVER TYPED before the fix, failing the run:
+  // the escape hatch that exists for exactly this shape could not reach a
+  // field inside a form the filler had already declined.
+  if (g.coverage.unusedFields.length !== 0)
+    fail(`a declared value never landed: ${JSON.stringify(g.coverage.unusedFields)}`);
+  // Matched on the role-qualified label, because the nav link to /people/new is
+  // called "Add person" too and is legitimately left unexpanded on a deeper
+  // state by the depth budget. A bare substring match reads that as the submit
+  // having been both walked and skipped.
+  const submitted = (label) => {
+    const button = `button "${label}"`;
+    const e = g.edges.find((x) => x.action.kind === "fill" && x.action.selector.label === button);
+    if (!e) fail(`${button} was never filled and submitted`);
+    if (e.outcome.kind === "no-effect") fail(`submitting ${button} did nothing`);
+    if (g.coverage.skipped.some((s) => s.label === button))
+      fail(`${button} was both walked and skipped`);
+    return e;
+  };
+  const person = submitted("Add person");
+  submitted("Send invite");
+  // The declaration is the consent, and it is the only thing that may put a
+  // value in a password field: a synthesized one would be a real sign-in
+  // attempt against whatever app the walk was pointed at.
+  const pw = person.action.fill.find((f) => /person-password/.test(f.selector?.value ?? ""));
+  if (!pw) fail(`the password field was not among those filled: ${JSON.stringify(person.action.fill)}`);
+  if (pw.value !== "a-real-password") fail(`the declared password was not the one typed: ${pw.value}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "fills and submits both forms, typing the declared password and no other"
+
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
