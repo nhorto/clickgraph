@@ -36,6 +36,8 @@ export interface VerdictCoverage {
   limitHit: string | null;
   expectedRoutes: string[];
   unreachedRoutes: string[];
+  /** `--field` specs the walk never typed anywhere. */
+  unusedFields: string[];
   /** Coverage is heuristic. Restated here so a JSON consumer cannot miss it. */
   note: string;
 }
@@ -102,6 +104,7 @@ function coverageOf(graph: UIGraph): VerdictCoverage {
     limitHit: graph.coverage.limitHit,
     expectedRoutes: graph.coverage.expectedRoutes ?? [],
     unreachedRoutes: graph.coverage.unreachedRoutes ?? [],
+    unusedFields: graph.coverage.unusedFields ?? [],
     note: COVERAGE_NOTE,
   };
 }
@@ -124,6 +127,7 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   /** Named in every verdict sentence a fault run can produce, not just the clean one. */
   const fault = graph.config?.fault ? faultSpec(graph.config.fault) : undefined;
   const unreachedRoutes = graph.coverage.unreachedRoutes ?? [];
+  const unusedFields = graph.coverage.unusedFields ?? [];
 
   const findings: VerdictFinding[] = graph.edges
     .filter(
@@ -153,6 +157,13 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
       'nothing was walked — this run proves nothing about the app (it may have failed to load, or may need authentication)';
   } else if (unreachedRoutes.length > 0) {
     verdict = `${unreachedRoutes.length} expected route(s) were not reached: ${unreachedRoutes.join(', ')}`;
+  } else if (unusedFields.length > 0) {
+    // Ahead of the findings, because it changes what they are worth: the states
+    // those values were meant to open were never entered, so a clean list below
+    // is a clean list of a smaller app.
+    verdict =
+      `${unusedFields.length} declared field value(s) matched nothing and were never typed: ` +
+      `${unusedFields.join(', ')} — the states behind them were not walked`;
   } else if (findings.length === 0) {
     // Under fault injection "all produced an observable effect" would be a
     // true sentence that answers the wrong question. What the run proves is
@@ -189,7 +200,8 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
     walkedAt: graph.walkedAt,
     // A walk that never got past the login screen proved nothing about the app,
     // which is the same failure as a walk that exercised nothing at all.
-    ok: healthy && !nothingWalked && !load.likelyAuthWall && unreachedRoutes.length === 0,
+    ok: healthy && !nothingWalked && !load.likelyAuthWall &&
+      unreachedRoutes.length === 0 && unusedFields.length === 0,
     verdict,
     load: {
       healthy,
@@ -215,12 +227,21 @@ export function diffVerdict(
 
   let verdict: string;
   const unreachedRoutes = current.coverage.unreachedRoutes ?? [];
+  const unusedFields = current.coverage.unusedFields ?? [];
   if (regressions.length > 0) {
     verdict = `${regressions.length} regression(s): ${regressions[0].summary}${
       regressions.length > 1 ? ` (and ${regressions.length - 1} more)` : ''
     }`;
   } else if (unreachedRoutes.length > 0) {
     verdict = `${unreachedRoutes.length} expected route(s) were not reached: ${unreachedRoutes.join(', ')}`;
+  } else if (unusedFields.length > 0) {
+    // "No change" is the answer this would otherwise give, and it is the one
+    // sentence a reader must not get here: the app renamed the field the value
+    // was aimed at, so a whole branch stopped being walked and nothing about
+    // the branch itself changed.
+    verdict =
+      `${unusedFields.length} declared field value(s) matched nothing and were never typed: ` +
+      `${unusedFields.join(', ')} — the states behind them were not walked`;
   } else if (diff.changes.length === 0) {
     verdict = 'no change — every walked interaction behaves as it did in the baseline';
   } else {
@@ -239,7 +260,7 @@ export function diffVerdict(
     url: current.baseUrl,
     baselineWalkedAt: diff.baselineWalkedAt,
     currentWalkedAt: diff.currentWalkedAt,
-    ok: regressions.length === 0 && unreachedRoutes.length === 0,
+    ok: regressions.length === 0 && unreachedRoutes.length === 0 && unusedFields.length === 0,
     verdict,
     regressions: regressions.map((ch) => ({
       kind: ch.kind,

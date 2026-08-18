@@ -121,17 +121,22 @@ export function reportWalk(graph: UIGraph): string {
   lines.push(c.bold('Not covered'));
   const expectedRoutes = coverage.expectedRoutes ?? [];
   const unreachedRoutes = coverage.unreachedRoutes ?? [];
+  const unusedFields = coverage.unusedFields ?? [];
   if (expectedRoutes.length > 0) {
     lines.push(
       `  Expected routes: ${expectedRoutes.length - unreachedRoutes.length}/${expectedRoutes.length} reached`,
     );
     for (const route of unreachedRoutes) lines.push(c.red(`  NOT REACHED  ${route}`));
   }
+  for (const spec of unusedFields) {
+    lines.push(c.red(`  NEVER TYPED  --field ${spec}`));
+  }
   if (coverage.edgesWalked === 0) {
     // Never let "no controls found" read as "everything passed".
     lines.push(c.yellow('  nothing was walked — this run proves nothing about the app'));
   } else if (
-    coverage.edgesUnwalked === 0 && coverage.skipped.length === 0 && unreachedRoutes.length === 0
+    coverage.edgesUnwalked === 0 && coverage.skipped.length === 0 &&
+    unreachedRoutes.length === 0 && unusedFields.length === 0
   ) {
     lines.push(c.dim('  nothing — every control found was exercised'));
   } else {
@@ -184,8 +189,9 @@ export function reportDiff(
   }
 
   const unreachedRoutes = current?.coverage.unreachedRoutes ?? diff.currentUnreachedRoutes ?? [];
+  const unusedFields = current?.coverage.unusedFields ?? diff.currentUnusedFields ?? [];
 
-  if (diff.changes.length === 0 && unreachedRoutes.length === 0) {
+  if (diff.changes.length === 0 && unreachedRoutes.length === 0 && unusedFields.length === 0) {
     lines.push(c.green('  No change. Every walked interaction behaves as it did in the baseline.'));
     lines.push('');
     return lines.join('\n');
@@ -213,6 +219,15 @@ export function reportDiff(
   if (unreachedRoutes.length > 0) {
     lines.push(c.red(c.bold(`Expected routes not reached (${unreachedRoutes.length})`)));
     for (const route of unreachedRoutes) lines.push(`  ${c.red('•')} ${route}`);
+    lines.push('');
+  }
+
+  // "No change" from a walk whose declared values never landed describes an app
+  // this run did not actually open. Reported beside the route gap, and for the
+  // same reason: a gap that only shows up as silence is the one that misleads.
+  if (unusedFields.length > 0) {
+    lines.push(c.red(c.bold(`Declared field values never typed (${unusedFields.length})`)));
+    for (const spec of unusedFields) lines.push(`  ${c.red('•')} --field ${spec}`);
     lines.push('');
   }
 

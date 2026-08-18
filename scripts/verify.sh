@@ -15,6 +15,8 @@
 #   I  CLI, graph, and JSON output identify the clickgraph build that produced them
 #   J  declared routes expose screens that fixture state left unreachable
 #   K  a safely dismissed confirm dialog is observed, not called a dead control
+#   L  a state whose only door is a typed value is walked when one is declared,
+#      and a declaration that lands nowhere fails the run instead of passing
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -267,9 +269,9 @@ check "$?" "2" "a missing storage-state file is a usage error, not a silent walk
 
 echo "F: forms, filled and unfilled"
 start_fixture PORT="$PORT"
-# Default: neither form is submitted, and neither is called broken for it. An
-# unfilled form with a required field cannot submit — blaming the button for
-# that would report every signup and checkout form in every app as dead.
+# Default: no form is submitted, and none is called broken for it. An unfilled
+# form with a required field cannot submit — blaming the button for that would
+# report every signup and checkout form in every app as dead.
 node dist/cli.js walk "$URL" --quiet --json --out /tmp/clickgraph-forms-off.json \
   >/tmp/clickgraph-forms-off-out.json 2>/dev/null
 check "$?" "0" "a walk with unfilled forms still succeeds"
@@ -278,13 +280,20 @@ node -e '
   const g = require("/tmp/clickgraph-forms-off.json");
   const fail = (m) => { console.error(m); process.exit(1); };
   const dead = v.findings.map((f) => f.control).join(" ");
-  if (/Create account|Send feedback/.test(dead))
+  if (/Create account|Send feedback|Look up/.test(dead))
     fail(`a form submit was called dead without being filled: ${dead}`);
   const submits = g.coverage.skipped.filter((s) => /refuses to submit/.test(s.detail ?? ""));
-  if (submits.length !== 2) fail(`want both forms skipped with a reason, got ${submits.length}`);
+  // Named, not counted. The fixture grows a form every time the tool grows a
+  // feature, and a bare total turns each addition into a failure that is not
+  // describing anything untrue — the same lesson the walk --json check above
+  // records.
+  for (const want of ["Create account", "Send feedback", "Look up"]) {
+    if (!submits.some((s) => s.label.includes(want)))
+      fail(`${want} was not skipped with a reason: ${JSON.stringify(submits.map((s) => s.label))}`);
+  }
   if (g.edges.some((e) => e.action.kind === "fill")) fail("a form was filled without --fill-forms");
 ' 2>>/tmp/clickgraph-json-err.txt
-check "$?" "0" "leaves both forms unsubmitted, and says so rather than calling them dead"
+check "$?" "0" "leaves every form unsubmitted, and says so rather than calling them dead"
 
 # --fill-forms: the working form is proven, and the one that swallows its own
 # submission is caught. Nothing but filling it in can tell those two apart.
@@ -377,7 +386,12 @@ check "$?" "0" "declared routes all count as reached when fixture data exposes t
 node -e '
   const graph = require("/tmp/clickgraph-routes-ok.json");
   const verdict = require("/tmp/clickgraph-routes-ok-verdict.json");
-  if (graph.config.expectedRoutes.length !== 7) process.exit(1);
+  // Compared against the manifest, not a literal: the fixture gains a route
+  // whenever the tool gains a feature, and "7" would make each addition look
+  // like a resolution bug.
+  const declared = require("node:fs").readFileSync("fixture/routes.txt", "utf8")
+    .split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith("#"));
+  if (JSON.stringify(graph.config.expectedRoutes) !== JSON.stringify(declared)) process.exit(1);
   if (graph.coverage.unreachedRoutes.length !== 0) process.exit(1);
   if (verdict.coverage.unreachedRoutes.length !== 0) process.exit(1);
 '
@@ -538,6 +552,128 @@ node -e '
   });
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
+
+echo "L: declared field values open a state behind a lookup (issue #20)"
+# The premise: /lookup shows a detail panel only when the field holds a code
+# the app knows. The walker's own `clickgraph-test` is not one, so the panel —
+# and the dead "Void order" on it — is not merely unwalked but absent, and the
+# run says so by saying nothing.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/lookup" --quiet --json --fill-forms --max-depth 2 \
+  --out /tmp/clickgraph-lookup-blind.json >/tmp/clickgraph-lookup-blind-out.json 2>/dev/null
+check "$?" "0" "a walk with no declared value still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-lookup-blind-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.findings.some((f) => /Void order/.test(f.control)))
+    fail("the dead control behind the lookup was found without a declared value");
+  if (!v.ok) fail("a blind walk should still report ok — that is what made this invisible");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "without a declared value the state is absent, and the run reports success"
+
+node dist/cli.js walk "$URL/lookup" --quiet --json --fill-forms --max-depth 2 \
+  --field "#order-code=ORD-1042" --out /tmp/clickgraph-lookup.json \
+  >/tmp/clickgraph-lookup-out.json 2>/dev/null
+check "$?" "0" "a walk that declares the lookup value succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-lookup-out.json");
+  const g = require("/tmp/clickgraph-lookup.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  // The finding the feature exists for.
+  if (!v.findings.some((f) => f.severity === "no-effect" && /Void order/.test(f.control)))
+    fail("the dead control behind the lookup was not reached");
+  // Its working neighbour must not be reported, or every lookup detail view
+  // becomes a wall of false positives.
+  if (v.findings.some((f) => /Reprint packing slip/.test(f.control)))
+    fail("the working control beside it was reported as broken");
+  // Reproducibility: the value is what opens the state, so the graph has to
+  // record it the way it records a fault.
+  if (JSON.stringify(g.config.fields) !== JSON.stringify([{ match: "#order-code", value: "ORD-1042" }]))
+    fail(`the graph does not record its declared fields: ${JSON.stringify(g.config.fields)}`);
+  if (g.coverage.unusedFields.length !== 0) fail("a value that was typed was reported unused");
+  // Re-entering the state means re-typing. Without the selector on the fill
+  // entry, replay clicks submit on an empty form and lands somewhere else.
+  const typed = g.edges.find((e) => e.action.kind === "fill" && /Look up/.test(e.action.name));
+  if (!typed) fail("the lookup form was never filled");
+  if (typed.action.fill[0].value !== "ORD-1042") fail("the declared value was not the one typed");
+  if (!typed.action.fill[0].selector) fail("the fill entry is not replayable");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "reaches the dead control behind the lookup, clears its working neighbour"
+
+# A declaration that matches nothing is the silent failure this feature was
+# built to end: the walk goes on synthesizing and reports success.
+node dist/cli.js walk "$URL/lookup" --quiet --json --fill-forms --max-depth 1 \
+  --field "#renamed-since=ORD-1042" --out /tmp/clickgraph-lookup-unused.json \
+  >/tmp/clickgraph-lookup-unused-out.json 2>/dev/null
+check "$?" "1" "a declared value that matches nothing fails the run"
+node -e '
+  const v = require("/tmp/clickgraph-lookup-unused-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.ok !== false) fail("ok must be false when a declared value never landed");
+  if (JSON.stringify(v.coverage.unusedFields) !== JSON.stringify(["#renamed-since=ORD-1042"]))
+    fail(`the unused declaration is not named: ${JSON.stringify(v.coverage.unusedFields)}`);
+  if (!/never typed/.test(v.verdict)) fail(`the verdict does not say why: ${v.verdict}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "JSON names the declaration that landed nowhere, and says the states were missed"
+
+# A selector the browser cannot parse is a usage error, not a walk that blames
+# the app's own field for it. Well-formed as a spec — it splits into selector
+# and value cleanly — so this reaches the CSS check rather than the one that
+# refuses a malformed --field argument. Those two are separate refusals with
+# separate messages, and the loop below covers the other one.
+node dist/cli.js walk "$URL/lookup" --quiet --fill-forms --field ":::nope=x" \
+  --out /tmp/clickgraph-lookup-bad.json >/dev/null 2>/tmp/clickgraph-lookup-bad-err.txt
+check "$?" "2" "an unparseable selector is a usage error"
+grep -q 'not valid CSS' /tmp/clickgraph-lookup-bad-err.txt
+check "$?" "0" "and it says which selector, before any walking happens"
+
+# Inheritance, for the fault's reason: the value is what opens the state, so a
+# diff that dropped it walks a smaller app and calls the difference a defect.
+node dist/cli.js diff "$URL/lookup" --quiet --json --fill-forms --max-depth 2 \
+  --baseline /tmp/clickgraph-lookup.json >/tmp/clickgraph-lookup-diff.json \
+  2>/tmp/clickgraph-lookup-diff-err.txt
+check "$?" "0" "diff inherits declared field values and reports no change"
+test ! -s /tmp/clickgraph-lookup-diff-err.txt
+check "$?" "0" "inherited declarations produce no warning"
+
+node dist/cli.js diff "$URL/lookup" --quiet --json --fill-forms --max-depth 2 --no-fields \
+  --baseline /tmp/clickgraph-lookup.json >/tmp/clickgraph-lookup-cross.json \
+  2>/tmp/clickgraph-lookup-cross-err.txt
+grep -q 'the states they opened will read as missing' /tmp/clickgraph-lookup-cross-err.txt
+check "$?" "0" "dropping a baseline's declared values is warned about explicitly"
+
+node -e '
+  Promise.all([import("./dist/formfill.js")]).then(([{ parseFieldSpec, refusesFill }]) => {
+    const fail = (m) => { console.error(m); process.exit(1); };
+    // Neither side owns "=". A value may contain them, and so may the
+    // selector — an attribute selector is the ordinary way to name a field.
+    // Getting this wrong is silent: the selector matches nothing.
+    const eq = parseFieldSpec("#q=a=b");
+    if (eq.match !== "#q" || eq.value !== "a=b") fail(`greedy split: ${JSON.stringify(eq)}`);
+    for (const [spec, m, v] of [
+      ["[data-testid=\"code\"]=ORD-1", "[data-testid=\"code\"]", "ORD-1"],
+      ["[data-testid=code]=ORD-1", "[data-testid=code]", "ORD-1"],
+      ["input:not([type=hidden])=X", "input:not([type=hidden])", "X"],
+    ]) {
+      const got = parseFieldSpec(spec);
+      if (got.match !== m || got.value !== v)
+        fail(`${spec} parsed as ${JSON.stringify(got)}`);
+    }
+    for (const bad of ["", "=value", "   =v"]) {
+      let threw = false;
+      try { parseFieldSpec(bad); } catch { threw = true; }
+      if (!threw) fail(`${JSON.stringify(bad)} should be rejected`);
+    }
+    // A declared value clears the password refusal and nothing else: the rule
+    // was never "do not type here", it was "do not GUESS here".
+    const password = { inputType: "password", tag: "input" };
+    if (!refusesFill(password)) fail("an undeclared password field must still stop the form");
+    if (refusesFill(password, "hunter2")) fail("a declared password must be typed");
+    if (!refusesFill({ inputType: "file", tag: "input" }, "anything"))
+      fail("no string fills a file input, declared or not");
+  });
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the field spec parses, refuses nonsense, and overrides only the password rule"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

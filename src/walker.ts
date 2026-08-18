@@ -2,8 +2,8 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright';
 import type {
-  Action, ElementDescriptor, LoadHealth, Selector, SkippedElement, UIEdge, UIGraph, UINode,
-  WalkConfig,
+  Action, DeclaredField, ElementDescriptor, LoadHealth, Selector, SkippedElement, UIEdge, UIGraph,
+  UINode, WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
 import { CLICKGRAPH_VERSION } from './version.js';
@@ -12,7 +12,7 @@ import {
   type PageSnapshot,
 } from './observer.js';
 import { normalizeRoute, normalizeText } from './fingerprint.js';
-import { refusesFill, synthesize } from './formfill.js';
+import { fieldSpec, refusesFill, synthesize } from './formfill.js';
 import { faultSpec, installFault, isInjected } from './fault.js';
 
 /**
@@ -69,6 +69,7 @@ const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
   allowDangerous: false,
   fillForms: false,
   expectedRoutes: [],
+  fields: [],
 };
 
 /** Run the caller's reset/setup command before opening the browser. */
@@ -232,6 +233,56 @@ async function locate(page: Page, el: ElementDescriptor): Promise<Selector | nul
 }
 
 /**
+ * The caller's declaration for this field, or null to synthesize a value.
+ *
+ * Matching is `Element.matches` in the page, so a declared selector means
+ * exactly what it means everywhere else in the browser. First match wins, so
+ * a specific selector listed before a general one narrows it.
+ *
+ * The whole declaration comes back rather than just its value, because which
+ * one matched is what says the declaration was used at all.
+ */
+async function declaredFor(
+  page: Page,
+  at: Selector,
+  fields: readonly DeclaredField[],
+): Promise<DeclaredField | null> {
+  for (const field of fields) {
+    const hit = await resolve(page, at).evaluate(
+      (el: Element, css: string) => el.matches(css),
+      field.match,
+    );
+    if (hit) return field;
+  }
+  return null;
+}
+
+/**
+ * Refuse a selector the browser cannot parse, before the walk starts.
+ *
+ * Left to the walk, a typo'd selector throws inside the fill loop and gets
+ * blamed on the field — "could not type into ..." — which sends the reader
+ * looking at their app instead of at their config.
+ */
+async function assertFieldSelectors(page: Page, fields: readonly DeclaredField[]): Promise<void> {
+  if (fields.length === 0) return;
+  const invalid = await page.evaluate((selectors: string[]) =>
+    selectors.filter((css) => {
+      try {
+        document.querySelector(css);
+        return false;
+      } catch {
+        return true;
+      }
+    }), fields.map((f) => f.match));
+  if (invalid.length > 0) {
+    throw new Error(
+      `--field selector is not valid CSS: ${invalid.map((css) => JSON.stringify(css)).join(', ')}`,
+    );
+  }
+}
+
+/**
  * Will this form submit as it stands, or will the browser refuse it?
  *
  * `checkValidity` is the browser's own answer, which beats reading the markup
@@ -329,6 +380,8 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   const edges: UIEdge[] = [];
   let load: LoadHealth = { consoleErrors: [], httpErrors: [], interactiveFound: 0 };
   const skipped: SkippedElement[] = [];
+  /** `--field` specs whose selector matched something the walk typed into. */
+  const fieldsUsed = new Set<string>();
   let unwalked = 0;
   let limitHit: string | null = null;
   let actionsUsed = 0;
@@ -367,6 +420,22 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     await settle(page, config.settleMs);
     for (const action of path) {
       try {
+        // Re-type before re-submitting. A state that exists only because a
+        // field held the right value cannot be re-entered by clicking the
+        // submit again: that lands on the empty-form branch, which is a
+        // different screen with none of the controls the walk came back for
+        // (issue #20). Entries recorded before this carry no selector, and
+        // replay for them is the submit alone, exactly as it used to be.
+        for (const entry of action.fill ?? []) {
+          if (!entry.selector) continue;
+          const field = resolve(page, entry.selector);
+          if ((await field.count()) === 0) return false;
+          if (entry.option === undefined) {
+            await field.fill(entry.value, { timeout: ACTION_TIMEOUT });
+          } else {
+            await field.selectOption(entry.option, { timeout: ACTION_TIMEOUT });
+          }
+        }
         const step = resolve(page, action.selector);
         // A step that is not there will not appear by waiting five seconds for
         // it, and the whole path fails either way — so fail on the count.
@@ -388,6 +457,10 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     const loaded = await gotoPath([]);
     const observedLoad = loadWatch.stop();
     if (!loaded) throw new Error(`could not load ${baseUrl}`);
+    // As early as there is a document to ask. A selector the browser cannot
+    // parse is a usage error, and finding it after forty states of walking
+    // wastes the walk it was supposed to steer.
+    await assertFieldSelectors(page, config.fields ?? []);
     const entry = await captureState(page);
     load = {
       // The walk's own sabotage is split out of both lists, so a fault run is
@@ -569,16 +642,46 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // of the state fingerprint, so a working field looks inert, and the
         // walker returns to the start before any submit could use what was
         // typed. Opt-in, because a submission that succeeds writes real data.
-        const filled: { label: string; value: string }[] = [];
+        const filled: NonNullable<Action['fill']> = [];
         if (config.fillForms && el.formSubmit && el.formId) {
           const fields = state.elements.filter(
             (f) =>
               f !== el && f.formId === el.formId && !f.disabled &&
               (isTextEntry(f) || f.tag === 'select'),
           );
+
+          // Locate every field and resolve its declared value BEFORE typing
+          // into any of them. Whether a field was declared decides whether the
+          // form is refused below, and only the browser can say which fields a
+          // selector matches — so the question has to be asked first.
+          let unfillable: string | null = null;
+          const prepared: { field: ElementDescriptor; at: Selector; declared: string | null }[] = [];
+          for (const field of fields) {
+            try {
+              const at = await locate(page, field);
+              if (!at) throw new Error('field not found');
+              const match = await declaredFor(page, at, config.fields ?? []);
+              if (match) fieldsUsed.add(fieldSpec(match));
+              prepared.push({ field, at, declared: match?.value ?? null });
+            } catch {
+              unfillable = field.selector.label;
+              break;
+            }
+          }
+          if (unfillable) {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label,
+              reason: 'needs-input',
+              detail: `could not type into ${unfillable}, so the form was left alone`,
+            });
+            continue;
+          }
+
           // One refusing field stops the whole form. Submitting it with that
           // field deliberately blank would test something nobody asked for.
-          const refusal = fields.map(refusesFill).find((r) => r !== null);
+          const refusal = prepared
+            .map((p) => refusesFill(p.field, p.declared))
+            .find((r) => r !== null);
           if (refusal) {
             skipped.push({
               nodeId: state.nodeId, label: el.selector.label,
@@ -588,20 +691,30 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             continue;
           }
 
-          let unfillable: string | null = null;
-          for (const field of fields) {
+          for (const { field, at, declared } of prepared) {
             try {
-              const at = await locate(page, field);
-              if (!at) throw new Error('field not found');
               if (field.tag === 'select') {
+                // A declared value names the option outright. Where none was
+                // declared, any option other than the current one will do —
+                // the point is to prove the select is wired, not to choose
+                // well.
+                if (declared !== null) {
+                  await resolve(page, at).selectOption(declared, { timeout: ACTION_TIMEOUT });
+                  filled.push({
+                    label: field.selector.label, value: declared, selector: at, option: declared,
+                  });
+                  continue;
+                }
                 const opt = await pickOption(page, at);
                 if (!opt) continue; // nothing else to choose; leave it as it stands
                 await resolve(page, at).selectOption(opt.value, { timeout: ACTION_TIMEOUT });
-                filled.push({ label: field.selector.label, value: opt.label });
+                filled.push({
+                  label: field.selector.label, value: opt.label, selector: at, option: opt.value,
+                });
               } else {
-                const value = synthesize(field);
+                const value = declared ?? synthesize(field);
                 await resolve(page, at).fill(value, { timeout: ACTION_TIMEOUT });
-                filled.push({ label: field.selector.label, value });
+                filled.push({ label: field.selector.label, value, selector: at });
               }
             } catch {
               unfillable = field.selector.label;
@@ -781,6 +894,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   const expectedRoutes = config.expectedRoutes ?? [];
   const reachedRoutes = new Set(Object.values(nodes).map((node) => node.fingerprint.route));
   const unreachedRoutes = expectedRoutes.filter((route) => !reachedRoutes.has(route));
+  // A declared value that never landed is the silent failure this feature was
+  // built to end. Counted here so it reaches the verdict rather than being
+  // left for a reader to notice in an edge list.
+  const unusedFields = (config.fields ?? [])
+    .map(fieldSpec)
+    .filter((spec) => !fieldsUsed.has(spec));
 
   return {
     clickgraphVersion: CLICKGRAPH_VERSION,
@@ -799,6 +918,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       limitHit,
       expectedRoutes,
       unreachedRoutes,
+      unusedFields,
     },
   };
 }

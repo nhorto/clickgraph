@@ -5,9 +5,10 @@ import { DEFAULT_GRAPH_PATH, diffGraphs, loadGraph, saveGraph } from './graph.js
 import { reportDiff, reportWalk } from './report.js';
 import { diffVerdict, walkVerdict } from './verdict.js';
 import { captureLogin } from './login.js';
-import type { FaultInjection, WalkConfig } from './types.js';
+import type { DeclaredField, FaultInjection, WalkConfig } from './types.js';
 import type { WalkOptions } from './walker.js';
 import { faultSpec, parseFaultSpec } from './fault.js';
+import { fieldSpec, parseFieldSpec } from './formfill.js';
 import { CLICKGRAPH_VERSION, clickgraphVersionWarning } from './version.js';
 import { normalizeRoute } from './fingerprint.js';
 import { warnIfStaleLocalBuild } from './build.js';
@@ -34,6 +35,9 @@ interface Args {
   fault?: FaultInjection;
   /** `--no-fail-requests` on a diff whose baseline injected faults. */
   faultCleared?: boolean;
+  fields?: DeclaredField[];
+  /** `--no-fields` on a diff whose baseline declared them. */
+  fieldsCleared?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -77,6 +81,18 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--no-fail-requests') {
       args.fault = undefined;
       args.faultCleared = true;
+    } else if (arg === '--field') {
+      const spec = rest[++i];
+      if (!spec || spec.startsWith('-')) {
+        throw new Error('--field needs <css-selector>=<value>, e.g. --field "#order-code=ORD-1042"');
+      }
+      // Repeatable, and order is kept: the first declaration that matches a
+      // field wins, so listing the specific one first narrows the general one.
+      args.fields = [...(args.fields ?? []), parseFieldSpec(spec)];
+      args.fieldsCleared = false;
+    } else if (arg === '--no-fields') {
+      args.fields = [];
+      args.fieldsCleared = true;
     }
     else if (!arg.startsWith('-')) args.url = arg;
   }
@@ -129,6 +145,19 @@ Options
                         regressed. Inherited by diff, and warned about loudly
                         when the two disagree
   --no-fail-requests    walk healthily against a baseline that injected faults
+  --field <sel>=<value> type this value into fields matching this CSS selector
+                        instead of synthesizing one. Repeatable; the first
+                        declaration that matches a field wins.
+                          --field "#order-code=ORD-1042"
+                        For lookup fields, whose only useful contents are an
+                        identifier the app already knows: without one the walk
+                        submits "clickgraph-test", lands on "no such record",
+                        and never enters the detail view behind it. Unlike
+                        synthesized values these are not marked as the walk's
+                        own, and a declared password IS a real sign-in attempt.
+                        Inherited by diff. A declaration that matches nothing
+                        fails the run rather than passing quietly
+  --no-fields           explicitly clear a diff baseline's declared field values
   --pre <command>       run a shell command before opening the browser; a
                         non-zero exit aborts the walk. Recorded in the graph,
                         but must be repeated explicitly for diff
@@ -196,6 +225,10 @@ function optionsFor(args: Args, baseline?: WalkConfig): WalkOptions {
     // diff that silently dropped it would compare a healthy app against a
     // broken one and call the whole app regressed.
     fault: args.faultCleared ? undefined : (args.fault ?? baseline?.fault),
+    // Inherited for the fault's reason exactly: the declared value is what
+    // opens the state, so a diff that dropped it would walk a smaller app and
+    // call every control behind the lookup missing.
+    fields: args.fieldsCleared ? [] : (args.fields ?? baseline?.fields),
     pre: args.pre,
     onProgress: args.quiet || args.json ? undefined : (m: string) => console.error(`  ${m}`),
   };
@@ -275,6 +308,22 @@ function configWarnings(args: Args, baseline: WalkConfig, url: string): string[]
         : `--fail-requests is ${JSON.stringify(effectiveSpec ?? null)}, but the baseline recorded ` +
           `${JSON.stringify(baselineSpec ?? null)} — the two runs exercise different failure paths ` +
           'and are not comparable',
+    );
+  }
+
+  // Same family as the fault mismatch, and the same consequence: the states a
+  // declared value opens exist in one run and not the other, so every control
+  // inside them reads as new or missing.
+  const effectiveFields = args.fieldsCleared ? [] : (args.fields ?? baseline.fields ?? []);
+  const effectiveFieldSpecs = JSON.stringify(effectiveFields.map(fieldSpec));
+  const baselineFieldSpecs = JSON.stringify((baseline.fields ?? []).map(fieldSpec));
+  if (effectiveFieldSpecs !== baselineFieldSpecs) {
+    warnings.push(
+      baselineFieldSpecs !== '[]' && effectiveFields.length === 0
+        ? `the baseline declared field values (${baselineFieldSpecs}), but this diff will not type ` +
+          'them — the states they opened will read as missing'
+        : `--field resolves to ${effectiveFieldSpecs}, but the baseline recorded ` +
+          `${baselineFieldSpecs} — the two runs reach different states`,
     );
   }
 

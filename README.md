@@ -144,6 +144,53 @@ person. A password field is never typed into and stops its whole form — a wron
 password is a failed sign-in attempt, which on a real app means rate limiting or
 a locked account.
 
+### Lookup fields, and the states behind them
+
+Some fields have no reasonable synthetic value. A lookup takes an identifier
+the app already knows, so `clickgraph-test` lands on "no such record" — and the
+detail view behind it, with every control on it, is never walked. Worse, it is
+never *counted*: the walk reports success and a diff reports "No change",
+because the state it would compare does not exist in either run.
+
+`--field` declares what to type:
+
+```bash
+npx clickgraph walk http://localhost:5173 --fill-forms \
+  --field "#order-code=ORD-1042"
+```
+
+The selector is matched with the browser's own `Element.matches`, so it means
+what it means everywhere else. It is repeatable, and the first declaration that
+matches a field wins — list the specific one before the general one.
+
+**A declaration that matches nothing fails the run.** That is the whole point:
+the failure this replaces was a walk that quietly went on synthesizing and
+reported a clean app.
+
+```
+Declared field values never typed (1)
+  • --field #renamed-since=ORD-1042
+```
+
+**The value is recorded, and a diff inherits it** — for the same reason a fault
+is. It is what opens the state, so a diff that dropped it would walk a smaller
+app and report every control behind the lookup as missing. Dropping it on
+purpose with `--no-fields` says so loudly.
+
+**Declared values are not marked as the walk's own.** They cannot be: the point
+is that they look exactly like what a person would type, which is also what
+makes them untraceable afterwards, unlike the `clickgraph-test` token. A
+declared value for a password field IS typed — the rule was never "do not type
+here", it was "do not *guess* here — a guessed password is a failed sign-in
+attempt" — so declaring one is a real sign-in attempt against a real account.
+A file input stays refused: no string fills one.
+
+**Re-entering the state means re-typing it.** A `fill` edge records the selector
+of each field it filled, so returning to a state opened by typing replays the
+typing first. Clicking submit again on an empty form lands on the empty-form
+branch, which is a different screen with none of the controls the walk came
+back for.
+
 ## Deterministic app state
 
 Form submissions and other walked controls can change a persistent development

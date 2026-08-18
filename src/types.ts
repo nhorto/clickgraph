@@ -69,8 +69,21 @@ export interface Action {
    * For `fill`, what was typed into each field before the submit was clicked.
    * Kept out of the edge key for the same reason as `value`, and recorded so
    * that a row a walk created can be traced back to the run that created it.
+   *
+   * `selector` and `option` are what make the edge REPLAYABLE. A state that
+   * only opens once a field holds the right value cannot be re-entered by
+   * clicking the submit again — that lands on the empty-form branch, a
+   * different screen with none of the controls the walk came back for. Both
+   * are optional because graphs walked before this existed have neither, and
+   * such an edge replays the way it always did: submit only.
    */
-  fill?: { label: string; value: string }[];
+  fill?: {
+    label: string;
+    value: string;
+    selector?: Selector;
+    /** Present for a `<select>`: the option's value, which is what re-selects it. */
+    option?: string;
+  }[];
 }
 
 /**
@@ -173,6 +186,14 @@ export interface Coverage {
   expectedRoutes?: string[];
   /** Declared routes for which the walk discovered no node. */
   unreachedRoutes?: string[];
+  /**
+   * Declared field values whose selector matched nothing the walk ever typed
+   * into. A value that never lands is the failure this feature exists to
+   * prevent — the walk goes on synthesizing, misses the state the value was
+   * meant to open, and reports success — so it is surfaced rather than
+   * shrugged off.
+   */
+  unusedFields?: string[];
 }
 
 export interface WalkConfig {
@@ -214,6 +235,33 @@ export interface WalkConfig {
    * the loudest one the tool emits.
    */
   fault?: FaultInjection;
+  /**
+   * Values to type into specific fields instead of synthesizing them.
+   *
+   * Recorded, and inherited by a diff, for the same reason the fault is: the
+   * value is what opens the state, so a run without it walks a smaller app and
+   * every control behind the lookup reads as missing.
+   */
+  fields?: DeclaredField[];
+}
+
+/**
+ * A value the caller declares for one field, because no synthetic value could
+ * work there.
+ *
+ * The case this exists for is a lookup: a field whose only useful contents are
+ * an identifier the app already knows. `clickgraph-test` is not a customer
+ * number, so the submit lands on "no such record" and the whole detail view
+ * behind it — with every control on it — never enters the graph (issue #20).
+ */
+export interface DeclaredField {
+  /**
+   * CSS selector, matched against the field by the browser's own
+   * `Element.matches`. The browser is the authority on what a selector means,
+   * so nothing here has to invent a second matching language.
+   */
+  match: string;
+  value: string;
 }
 
 /**
@@ -303,5 +351,7 @@ export interface GraphDiff {
   currentClickgraphVersion?: string;
   /** Current route gaps, carried so one-argument reportDiff calls stay honest. */
   currentUnreachedRoutes?: string[];
+  /** Declared values the current walk never typed, carried for the same reason. */
+  currentUnusedFields?: string[];
   changes: Change[];
 }
