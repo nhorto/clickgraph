@@ -518,20 +518,24 @@ check "$?" "0" "crossing a healthy walk with a fault baseline is warned about ex
 
 # Method scoping: failing every request usually leaves nothing on screen to
 # click, so the useful walks break writes and let reads through.
+# Imported the way every other check here does it: a relative specifier
+# resolved from the repo root this script cd'd into. An absolute path works on
+# exactly one machine, and on a CI runner it fails as "refuses nonsense".
 node -e '
-  const { parseFaultSpec } = require("/Users/nicholashorton/Documents/clickgraph/dist/fault.js");
-  const fail = (m) => { console.error(m); process.exit(1); };
-  const bare = parseFaultSpec("/api/*");
-  if (bare.status !== 500) fail("a bare pattern should default to 500");
-  const scoped = parseFaultSpec("POST,PUT /api/*@offline");
-  if (scoped.status !== "offline") fail("offline was not parsed");
-  if (scoped.methods.join(",") !== "POST,PUT") fail(`methods not parsed: ${scoped.methods}`);
-  if (scoped.pattern !== "/api/*") fail(`pattern not parsed: ${scoped.pattern}`);
-  for (const bad of ["", "/api/*@200", "/api/*@nope"]) {
-    let threw = false;
-    try { parseFaultSpec(bad); } catch { threw = true; }
-    if (!threw) fail(`${JSON.stringify(bad)} should be rejected, not walked`);
-  }
+  import("./dist/fault.js").then(({ parseFaultSpec }) => {
+    const fail = (m) => { console.error(m); process.exit(1); };
+    const bare = parseFaultSpec("/api/*");
+    if (bare.status !== 500) fail("a bare pattern should default to 500");
+    const scoped = parseFaultSpec("POST,PUT /api/*@offline");
+    if (scoped.status !== "offline") fail("offline was not parsed");
+    if (scoped.methods.join(",") !== "POST,PUT") fail(`methods not parsed: ${scoped.methods}`);
+    if (scoped.pattern !== "/api/*") fail(`pattern not parsed: ${scoped.pattern}`);
+    for (const bad of ["", "/api/*@200", "/api/*@nope"]) {
+      let threw = false;
+      try { parseFaultSpec(bad); } catch { threw = true; }
+      if (!threw) fail(`${JSON.stringify(bad)} should be rejected, not walked`);
+    }
+  });
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
 
