@@ -74,6 +74,30 @@ let branchRef = branch;
 try { git(['rev-parse', '--verify', '--quiet', branchRef], clone); }
 catch { branchRef = `origin/${branch}`; git(['rev-parse', '--verify', '--quiet', branchRef], clone); }
 
+// A clone copies the source's branches, not its remote-tracking refs. Cloning
+// a checkout whose own `main` is behind its remote therefore measures the
+// history that checkout happens to hold, which is a strict subset of the real
+// one — and the shortfall biases the result in the reassuring direction, since
+// fewer merges walked means fewer chances to flag and a smaller denominator
+// under the flag rate. Prefer what the source's remote knows over what its
+// working checkout does, and pull that in by SHA so no network is needed
+// (issue #37).
+let sourceHead = null;
+try { sourceHead = git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], source); }
+catch { /* the source tracks no remote for this branch; its own is the best there is */ }
+if (sourceHead) {
+  const cloneHead = git(['rev-parse', branchRef], clone);
+  if (cloneHead !== sourceHead) {
+    const ahead = git(['rev-list', '--count', `${cloneHead}..${sourceHead}`], source);
+    console.log(
+      `note: ${source} has ${branch} checked out ${ahead} commit(s) behind its origin — ` +
+      `replaying what the remote knows (${sourceHead.slice(0, 8)}), not the local branch`,
+    );
+    git(['fetch', '--quiet', source, `refs/remotes/origin/${branch}:refs/remotes/source/${branch}`], clone);
+    branchRef = `refs/remotes/source/${branch}`;
+  }
+}
+
 const mergeLog = git(
   ['log', '--merges', '--first-parent', '-n', String(pairsWanted), '--format=%H %s', branchRef],
   clone,
@@ -84,9 +108,16 @@ const merges = mergeLog.split('\n').filter(Boolean).map((line) => {
 }).reverse(); // oldest first, so the printed log reads like history
 
 if (merges.length === 0) fail(`no merge commits found on ${branchRef}`);
-if (merges.length < pairsWanted) {
-  console.log(`note: only ${merges.length} merge(s) on ${branchRef}, wanted ${pairsWanted}`);
-}
+// Repeated in the summary block below. A shortfall printed only here scrolls
+// away behind an hour of per-pair output, and the number it qualifies — the
+// flag rate — is read off the summary.
+const shortfall = merges.length < pairsWanted
+  ? `only ${merges.length} of the ${pairsWanted} merge(s) asked for exist on ${branchRef}`
+  : null;
+if (shortfall) console.log(`note: ${shortfall}`);
+console.log(
+  `replaying ${merges.length} merge(s) from ${branchRef} @ ${git(['rev-parse', branchRef], clone).slice(0, 8)}`,
+);
 
 const checkoutAt = (sha) => {
   git(['checkout', '--force', '--detach', sha], clone);
@@ -125,6 +156,14 @@ async function serveAnd(cliArgs) {
 const graphsDir = ensureDir(join(workDir, 'graphs'));
 ensureDir(resultsDir);
 const outPath = join(resultsDir, `replay-${name}-${timestamp()}.jsonl`);
+// What was actually replayed, written before any pair runs. A result file that
+// records only its pairs cannot be checked afterwards for whether it covered
+// the history it claims to (issue #37).
+appendFileSync(outPath, JSON.stringify({
+  kind: 'run', target: name, branch, branchRef,
+  head: git(['rev-parse', branchRef], clone),
+  mergesFound: merges.length, pairsWanted, shortfall,
+}) + '\n');
 const rows = [];
 
 const record = (row) => {
@@ -227,6 +266,8 @@ console.log(`  tool-failure ${toolFailed.length}`);
 if (measured > 0) {
   console.log(`  flag rate    ${(100 * flagged.length / measured).toFixed(0)}% of measured merges`);
 }
+// Next to the rate it qualifies, not an hour above it.
+if (shortfall) console.log(`  incomplete   ${shortfall}`);
 if (flagged.length > 0) {
   console.log(`\nFlagged merges — triage each one (a merge that really did break`);
   console.log(`something is a true positive; anything else is noise to fix):`);
