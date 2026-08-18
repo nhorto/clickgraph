@@ -33,6 +33,12 @@ export interface VerdictCoverage {
    * from a broken tool, and those call for opposite responses.
    */
   skipped: { reason: string; count: number; examples: string[] }[];
+  /**
+   * States where the walk's own control accounting did not balance. Empty on
+   * every healthy run. Carried because an agent that reads only the verdict
+   * would otherwise act on coverage numbers this run already knows are wrong.
+   */
+  accountingGaps: string[];
   limitHit: string | null;
   expectedRoutes: string[];
   unreachedRoutes: string[];
@@ -99,6 +105,7 @@ function coverageOf(graph: UIGraph): VerdictCoverage {
       count,
       examples: [...examples].slice(0, 2),
     })),
+    accountingGaps: (graph.coverage.accountingGaps ?? []).map((gap) => gap.detail),
     limitHit: graph.coverage.limitHit,
     expectedRoutes: graph.coverage.expectedRoutes ?? [],
     unreachedRoutes: graph.coverage.unreachedRoutes ?? [],
