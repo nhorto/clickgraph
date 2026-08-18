@@ -30,6 +30,7 @@ Findings
              on /settings — 500 POST http://localhost:4173/api/save
 
 Not covered
+  3 control(s) discovered but not walked
   1 skipped (disabled)
   1 skipped (dangerous)
   1 skipped (external)
@@ -89,12 +90,14 @@ cp -r skill/clickgraph ~/.claude/skills/clickgraph
 
 The hard problem (see [RESEARCH.md](RESEARCH.md)) is deciding whether two screens are "the same state". This is handled in two tiers:
 
-- **identity** = route + headings → decides node id.
+- **identity** = route + *visible* headings → decides node id.
 - **structure** = identity + every interactive control → detects shape changes.
 
 Keeping structure *out* of the node id is what lets a page gain a button without the screen being reported as a different, unreachable screen. Without this split, every ordinary UI change orphans the graph and the tool cries wolf on its author's own work — the failure mode that killed the previous generation of these tools.
 
 **Known limitation, stated plainly:** two genuinely different screens sharing a route *and* their headings collapse into one node. v1 errs toward under-splitting, because a missed split is quieter than a graph that resets every commit.
+
+Only headings the user can actually see are counted. An SPA that keeps every screen mounted and reveals one at a time otherwise hands the same heading list to all of them, which collapses the whole app to a single node and still exits 0 (issue #25). The cost of counting only what is on screen is that a screen with no visible heading is identified by its route alone — accepted, because the remaining tie-breakers are the ones `structure` already carries for the express reason that they move on every ordinary UI edit.
 
 ## Apps behind a login
 
@@ -117,6 +120,31 @@ npx clickgraph diff http://localhost:5173 --storage-state .uigraph/session.json
 
 When the session expires the diff says so — "the entry page now looks like a
 login screen" — instead of reporting the entire app as missing.
+
+### Sessions kept per tab
+
+Playwright's storage state holds cookies and localStorage and nothing else, so
+an app that keeps its session in `sessionStorage` — the deliberate choice when a
+session must not outlive the tab — used to save an empty file and walk straight
+back into its own sign-in form, with `login` reporting success either way.
+
+`login` now saves that third store too, in the same file and labelled by the
+store it came from:
+
+```json
+{
+  "cookies":        [ ... ],
+  "origins":        [ { "origin": "...", "localStorage": [ ... ] } ],
+  "sessionStorage": [ { "origin": "...", "items": [ { "name": "...", "value": "..." } ] } ]
+}
+```
+
+A walk replays the `sessionStorage` entries into the browser before its first
+navigation, so the app finds its session where it left it. It is restored only
+for the origin it was captured from, because that is the only place it means
+anything — and if the walk is of a different origin, the walk says so rather
+than reporting a sign-in screen it cannot explain. Session files written before
+this existed have no `sessionStorage` key and keep working unchanged.
 
 ## Forms
 
@@ -383,6 +411,23 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
   and alert dialogs are recorded per action and dismissed so an autonomous walk
   never authorizes the guarded branch. The edge says the dialog was raised and
   that its accept branch remains unwalked, instead of calling the control dead.
+- **A class on something that is not a control is a state the user can see.** A
+  masked PIN entry fills its dots by moving a div from `pin-dot` to
+  `pin-dot filled` — no text, no attribute, no rectangle — so all eleven keys of
+  a working keypad reported dead at once. Class attributes are now their own
+  effect signal, sampled everywhere except on the controls themselves: a click
+  lands the pointer and the focus ring on its target, and libraries mirror both
+  into class names, so including controls would report an effect for every click
+  ever made. The same signal covers step rails, progress bars and a tab
+  underline drawn on a div.
+- **The walk scrolls to reach a control, and must not take credit for it.**
+  Playwright's click auto-scrolls its target, so a reading taken across that
+  scroll calls every control below the fold a working scroller — and because the
+  visual signal samples viewport-relative rectangles, it was already vouching
+  for dead buttons on the strength of the walk's own movement. The scroll now
+  happens first and deliberately, and the baseline is re-read from where the
+  click will actually land. What is left between the two readings is the action:
+  a back-to-top button, a jump link, a carousel arrow moving a strip.
 
 ## Layout
 

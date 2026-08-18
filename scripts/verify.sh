@@ -15,7 +15,13 @@
 #   I  CLI, graph, and JSON output identify the clickgraph build that produced them
 #   J  declared routes expose screens that fixture state left unreachable
 #   K  a safely dismissed confirm dialog is observed, not called a dead control
-#   L  a state whose only door is a typed value is walked when one is declared,
+#   L  a screen CSS is hiding does not lend its headings to the one on screen
+#   M  every enumerated control ends as an edge or a skip with a reason
+#   N  a class flip on an element that is not a control is a visible effect
+#   O  a control whose only effect is scrolling is not a dead control
+#   P  a session kept in sessionStorage is saved, replayed, and gets a walk
+#      past a sign-in screen no storage state could open
+#   Q  a state whose only door is a typed value is walked when one is declared,
 #      and a declaration that lands nowhere fails the run instead of passing
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
@@ -553,7 +559,373 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
 
-echo "L: declared field values open a state behind a lookup (issue #20)"
+echo "L: a screen CSS is hiding does not lend its headings to the one on screen (issue #25)"
+# /kiosk is six screens in one document, shown one at a time, and every heading
+# in it belongs to a screen the user is not looking at. Read without a
+# visibility filter they gave all six screens the same identity: one node, eight
+# interactions, no findings, exit 0 — a pass over a flow the walk never got past
+# the front door of. The entry screen has no heading of its own, which is what
+# left the borrowed ones as the whole of its identity.
+#
+# The paths below are handed to node as arguments rather than written into the
+# assertion, so the check reads the same files the redirects just wrote even
+# where the shell and node disagree about where /tmp is.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/kiosk" --quiet --json --out /tmp/clickgraph-kiosk-graph.json \
+  >/tmp/clickgraph-kiosk.json 2>/dev/null
+check "$?" "0" "the kiosk flow walks with nothing to report"
+node -e '
+  const [verdictPath, graphPath] = process.argv.slice(1);
+  const v = require(verdictPath);
+  const g = require(graphPath);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const nodes = Object.values(g.nodes);
+  if (v.coverage.states !== 6) fail(`the six screens collapsed to ${v.coverage.states}`);
+  if (v.coverage.walked !== 11) fail(`want 11 interactions, got ${v.coverage.walked}`);
+  // A control on a collapsed screen survives only through the self-loop that
+  // revealed it, and is skipped as unreachable once the walk has moved on
+  // (issue #8). Three were lost that way here. Screens that are their own nodes
+  // carry their own control lists, so nothing is left out of reach.
+  if (v.coverage.skipped.length !== 0)
+    fail(`nothing here should be out of reach: ${JSON.stringify(v.coverage.skipped)}`);
+  // Landmarks exist to say which screen a node is. A node holding two of these
+  // headings is holding one that belongs to a screen nobody can see.
+  const crowded = nodes.filter((n) => n.fingerprint.landmarks.length > 1);
+  if (crowded.length)
+    fail(`landmarks from screens that are not showing: ${JSON.stringify(crowded.map((n) => n.fingerprint.landmarks))}`);
+  const named = nodes.map((n) => n.fingerprint.landmarks[0] ?? "").sort().join("|");
+  const want = ["", "Enter your PIN", "Hello", "Shift reports", "Supervisor menu", "Who are you?"].join("|");
+  if (named !== want) fail(`screens are not identified one for one: ${named}`);
+' /tmp/clickgraph-kiosk.json /tmp/clickgraph-kiosk-graph.json 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "each screen is its own node, named by the heading the user can see"
+
+# The other half of the trade, and the reason this is a filter and not a richer
+# identity. Ana and Bo reach the same PIN screen with different text on it;
+# minting two nodes for that would be over-splitting, the failure case A guards
+# against for the rest of the app. Identity moves when the screen does, and not
+# for anything else that differs between two visits to it.
+node -e '
+  const [graphPath] = process.argv.slice(1);
+  const g = require(graphPath);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const nodes = Object.values(g.nodes);
+  const who = nodes.find((n) => n.fingerprint.landmarks[0] === "Who are you?");
+  if (!who) fail("the name screen was never reached");
+  const named = g.edges.filter((e) => e.from === who.id && /^(Ana|Bo)$/.test(e.action.name));
+  if (named.length !== 2) fail(`want both name buttons walked, got ${named.length}`);
+  if (named[0].to !== named[1].to) fail("one screen reached two ways became two nodes");
+  const pin = nodes.find((n) => n.id === named[0].to);
+  if (pin?.fingerprint.landmarks[0] !== "Enter your PIN")
+    fail(`the names did not lead to the PIN screen: ${JSON.stringify(pin?.fingerprint.landmarks)}`);
+' /tmp/clickgraph-kiosk-graph.json 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "two ways onto one screen still reach a single node"
+
+echo "M: every enumerated control is accounted for"
+# A tight --max-depth is the cheapest way to leave controls unexpanded: six
+# whole screens are discovered and not one of their controls is walked. Before
+# issue #19 those controls appeared nowhere in the graph — not an edge, not a
+# skip — so coverage quietly shrank its own denominator and a run that never
+# touched a screen still read as essentially complete.
+#
+# The graphs here are written inside the repo rather than under /tmp because
+# these checks read back the exact file the walk just wrote and do arithmetic
+# on it; a path the shell and node both resolve the same way is the point.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL" --quiet --max-depth 1 --out .uigraph/accounting-depth.json \
+  >/tmp/clickgraph-accounting-depth.txt 2>&1
+check "$?" "0" "a walk cut short by a depth budget still succeeds"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const { coverage, nodes, edges } = require("./.uigraph/accounting-depth.json");
+
+  // The invariant, as asserted by the walk itself — it is the only party that
+  // can see the two correction terms: controls a self-loop revealed after a
+  // node froze its list (issue #8), and fields a form submit consumed instead
+  // of an edge. An absent gap list is the walk saying its books balanced.
+  if (coverage.accountingGaps)
+    fail(`the walk found its own books unbalanced: ${JSON.stringify(coverage.accountingGaps)}`);
+
+  // The same claim in the form the artifact can be checked on by anyone:
+  // every control that produced no edge carries a reason, so the summary
+  // number and the list of reasons cannot drift apart.
+  if (coverage.edgesUnwalked !== coverage.skipped.length)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} != ${coverage.skipped.length} skipped entries`);
+
+  // Neither correction can apply to a walk this shallow, so the bare per-node
+  // form has to hold exactly. This is the arithmetic issue #19 ran by hand.
+  for (const [id, node] of Object.entries(nodes)) {
+    const walked = edges.filter((e) => e.from === id).length;
+    const skips = coverage.skipped.filter((s) => s.nodeId === id).length;
+    if (walked + skips !== node.interactiveCount)
+      fail(`${node.fingerprint.route}: ${walked} walked + ${skips} skipped != ${node.interactiveCount} enumerated`);
+  }
+
+  // And the regression itself. The states the depth budget refused to expand
+  // are the ones that used to be silent, so every control on them must now
+  // name a reason and say which budget stopped it.
+  const unexpanded = Object.entries(nodes).filter(([id]) => !edges.some((e) => e.from === id));
+  if (unexpanded.length < 5) fail(`expected several unexpanded states, got ${unexpanded.length}`);
+  for (const [id, node] of unexpanded) {
+    const skips = coverage.skipped.filter((s) => s.nodeId === id);
+    if (skips.length !== node.interactiveCount)
+      fail(`${node.fingerprint.route}: ${node.interactiveCount} control(s), ${skips.length} explained`);
+    if (!skips.every((s) => s.reason === "budget" && /maxDepth/.test(s.detail ?? "")))
+      fail(`${node.fingerprint.route}: a skip does not say which budget stopped it`);
+  }
+  if (coverage.edgesUnwalked < 40)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} is too small to be counting whole screens`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "controls on a state a budget never expanded each carry a reason"
+grep -q 'skipped (budget)' /tmp/clickgraph-accounting-depth.txt
+check "$?" "0" "the human report groups the unexpanded controls under their budget"
+
+# The sharper half of issue #19. maxStates discards the state itself, so its
+# controls had no node to be counted against and edgesUnwalked stayed 0: a walk
+# that never recorded five screens reported as fully covered.
+node dist/cli.js walk "$URL" --quiet --max-states 3 --out .uigraph/accounting-states.json \
+  >/dev/null 2>&1
+check "$?" "0" "a walk cut short by a state budget still succeeds"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const { coverage, nodes } = require("./.uigraph/accounting-states.json");
+  if (coverage.accountingGaps)
+    fail(`the walk found its own books unbalanced: ${JSON.stringify(coverage.accountingGaps)}`);
+  if (coverage.edgesUnwalked !== coverage.skipped.length)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} != ${coverage.skipped.length} skipped entries`);
+  // Controls on screens the budget refused to record name a node deliberately
+  // absent from `nodes` — the only trace a graph can carry of a screen it was
+  // told not to keep, and better than the nothing that was there before.
+  const unrecorded = coverage.skipped.filter((s) => !nodes[s.nodeId]);
+  if (unrecorded.length === 0) fail("screens dropped by maxStates left no trace at all");
+  if (!unrecorded.every((s) => s.reason === "budget" && /maxStates/.test(s.detail ?? "")))
+    fail("a control on an unrecorded screen does not say which budget lost it");
+  if (coverage.edgesUnwalked < unrecorded.length)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} leaves out ${unrecorded.length} control(s) on screens never recorded`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "screens dropped by the state budget still name their controls"
+echo "N: a class flip on an element that is not a control is an effect (#26)"
+# Walked on its own: the keypad fills up as its keys are pressed, so the order
+# they are reached in is part of what is being tested.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/keypad" --quiet --out /tmp/clickgraph-keypad.json \
+  >/tmp/clickgraph-keypad.txt 2>&1
+check "$?" "0" "the keypad walk succeeds"
+# All eleven keys work, and every one of them works by moving a dot between
+# `pin-dot` and `pin-dot filled` — a class on a div. No text, no attribute the
+# element list carries, no rectangle, nothing on body or :root, so every signal
+# the snapshot had came back byte-identical and the whole keypad reported dead
+# at once (issue #26).
+#
+# The graph path is passed as an argument rather than written into the script,
+# so the reading and the writing agree about where /tmp is on every platform
+# this runs on.
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  for (const key of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "Back"]) {
+    const edge = graph.edges.find((e) => e.action.name === key);
+    if (!edge) fail(`key ${key} was never walked`);
+    if (edge.outcome.kind !== "state-changed") fail(`key ${key} came back ${edge.outcome.kind}`);
+    if (!/changed its class/.test(edge.outcome.note ?? ""))
+      fail(`key ${key} does not say what it did: ${edge.outcome.note}`);
+  }
+' /tmp/clickgraph-keypad.json
+check "$?" "0" "every key of the masked PIN keypad is reported as working"
+# The guard, which matters more than the fix it guards. A class signal
+# sensitive enough to see a dot fill must still leave the unwired control on
+# the same screen dead — being too sensitive here does not add noise, it
+# deletes the findings the tool exists to produce.
+grep -q 'NO EFFECT.*"Forgot your PIN?"' /tmp/clickgraph-keypad.txt
+check "$?" "0" "still reports the unwired control beside the keypad as dead"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = graph.edges.find((e) => /Forgot your PIN/.test(e.action.name));
+  if (!dead) fail("the unwired control was never walked");
+  if (dead.outcome.kind !== "no-effect") fail(`the unwired control came back ${dead.outcome.kind}`);
+  if (dead.outcome.benign) fail("the unwired control was excused instead of reported");
+' /tmp/clickgraph-keypad.json
+check "$?" "0" "the unwired keypad control is still a finding, not an excused one"
+
+echo "O: a control whose only effect is scrolling is not a dead control (#22)"
+node dist/cli.js walk "$URL/release-notes" --quiet --out /tmp/clickgraph-scroll.json \
+  >/tmp/clickgraph-scroll.txt 2>&1
+check "$?" "0" "the scrolling walk succeeds"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const walked = (name) => {
+    const edge = graph.edges.find((e) => new RegExp(name).test(e.action.name));
+    if (!edge) fail(`${name} was never walked`);
+    return edge;
+  };
+  const page = walked("Back to top");
+  if (page.outcome.kind !== "state-changed") fail(`back to top came back ${page.outcome.kind}`);
+  if (!/scrolled the page/.test(page.outcome.note ?? ""))
+    fail(`back to top does not say what it did: ${page.outcome.note}`);
+  const region = walked("Scroll the notes");
+  if (region.outcome.kind !== "state-changed") fail(`the pane scroller came back ${region.outcome.kind}`);
+  if (!/scrolled a region/.test(region.outcome.note ?? ""))
+    fail(`the pane scroller does not say what it did: ${region.outcome.note}`);
+' /tmp/clickgraph-scroll.json
+check "$?" "0" "reports the window scroller and the in-element scroller as working"
+# The trap, and the reason /release-notes puts 2400px above this control: the
+# walk scrolls to reach anything below the fold, so a reading taken across that
+# scroll instead of across the click alone vouches for every dead control down
+# there. This one came back "changed state — the view changed visually" before
+# the fix, on the strength of the walk's own scrolling and nothing else.
+grep -q 'NO EFFECT.*"Share release notes"' /tmp/clickgraph-scroll.txt
+check "$?" "0" "still reports the dead control below the fold as dead"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = graph.edges.find((e) => /Share release notes/.test(e.action.name));
+  if (!dead) fail("the dead control below the fold was never walked");
+  if (dead.outcome.kind !== "no-effect") fail(`it came back ${dead.outcome.kind}: ${dead.outcome.note}`);
+  if (dead.outcome.benign) fail("it was excused instead of reported");
+' /tmp/clickgraph-scroll.json
+check "$?" "0" "the walk own scroll-into-view is never credited to the control it reached"
+echo "P: a session kept in sessionStorage is said out loud, and carried (issue #27)"
+# /tab-app holds its whole session in sessionStorage, which Playwright's storage
+# state does not carry. `login` blocks on a keypress, so what runs below is
+# everything login does AFTER that keypress, against a context signed in by
+# script instead of by hand. The keypress itself is the only part no check here
+# can stand in for.
+start_fixture PORT="$PORT"
+# Written beside the graph rather than in a temp dir: this file is the subject
+# of the check, one process writes it and another reads it, and .uigraph is
+# already gitignored precisely because a session file holds live cookies.
+mkdir -p .uigraph
+rm -f .uigraph/tab-session.json
+CLICKGRAPH_URL="$URL" node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  (async () => {
+    const { chromium } = await import("playwright");
+    const { saveSignedInSession } = await import("./dist/login.js");
+    const browser = await chromium.launch();
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(process.env.CLICKGRAPH_URL + "/tab-app");
+    await page.fill("#tab-email", "walker@example.com");
+    await page.fill("#tab-password", "not-read-by-anything");
+    await page.click("button[type=submit]");
+    await page.waitForSelector("[data-testid=tab-export]");
+    const said = [];
+    await saveSignedInSession(context, "./.uigraph/tab-session.json", (m) => said.push(m));
+    await browser.close();
+    const heard = said.join(" | ");
+    if (!/Session saved to/.test(heard)) fail("login stopped reporting where it saved: " + heard);
+    if (!/NOTE.*sessionStorage/.test(heard))
+      fail("login said nothing about the store its session turned out to live in: " + heard);
+    if (!/replayed into the walk/.test(heard))
+      fail("the note does not say what will happen instead: " + heard);
+    // The diagnosis itself, asserted rather than assumed: what Playwright saves
+    // for this app is empty, which is why the other half of the file exists.
+    const saved = require("./.uigraph/tab-session.json");
+    if (saved.cookies.length !== 0 || saved.origins.length !== 0)
+      fail("the fixture no longer reproduces the issue: " + JSON.stringify(saved));
+    // The file format, and the property the issue asked of it: every entry says
+    // which of the three stores it came from.
+    if (saved.sessionStorage[0].origin !== process.env.CLICKGRAPH_URL)
+      fail("the saved sessionStorage does not name its origin: " + JSON.stringify(saved));
+    if (saved.sessionStorage[0].items[0].name !== "acme.tab-session")
+      fail("the session key itself was not saved: " + JSON.stringify(saved));
+  })().catch((e) => fail(String((e && e.stack) || e)));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "login saves the sessionStorage half, labelled, and says it had to"
+
+# The other half of being right: an app that keeps a wizard step in
+# sessionStorage and its session in a cookie must hear nothing. A warning that
+# fires on ordinary sessionStorage use is a warning everyone learns to ignore.
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  import("./dist/session.js").then(({ sessionStorageOnlyOrigins }) => {
+    const scratch = [{ origin: "https://app.example.com", items: [{ name: "wizard.step", value: "2" }] }];
+    const cookie = (domain) => ({
+      cookies: [{ name: "sid", value: "x", domain, path: "/", expires: -1,
+        httpOnly: true, secure: true, sameSite: "Lax" }],
+      origins: [],
+    });
+    if (sessionStorageOnlyOrigins(cookie("app.example.com"), scratch).length !== 0)
+      fail("an app whose session is a cookie was warned about its scratch sessionStorage");
+    if (sessionStorageOnlyOrigins(cookie(".example.com"), scratch).length !== 0)
+      fail("a parent-domain cookie was not recognised as covering this origin");
+    if (sessionStorageOnlyOrigins(cookie("auth.unrelated.test"), scratch).length !== 1)
+      fail("a cookie for an unrelated host was counted as this origin session");
+    const local = { cookies: [], origins: [
+      { origin: "https://app.example.com", localStorage: [{ name: "token", value: "y" }] },
+    ] };
+    if (sessionStorageOnlyOrigins(local, scratch).length !== 0)
+      fail("an app whose session is in localStorage was warned about it anyway");
+    if (sessionStorageOnlyOrigins({ cookies: [], origins: [] }, scratch)[0] !== "https://app.example.com")
+      fail("an origin with nothing saved but sessionStorage was not reported");
+    if (sessionStorageOnlyOrigins({ cookies: [], origins: [] }, []).length !== 0)
+      fail("an app with no sessionStorage at all was warned about it");
+  });
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "sessionStorage kept beside a real cookie session is not warned about"
+
+# The failure the issue reports, reproduced exactly: the same session with its
+# sessionStorage half removed is all the old format could hold.
+node -e '
+  const fs = require("node:fs");
+  const { sessionStorage, ...playwrightHalf } = require("./.uigraph/tab-session.json");
+  fs.writeFileSync("./.uigraph/tab-session-legacy.json", JSON.stringify(playwrightHalf));
+' 2>>/tmp/clickgraph-json-err.txt
+node dist/cli.js walk "$URL/tab-app" --quiet --json \
+  --storage-state .uigraph/tab-session-legacy.json --out .uigraph/tab-legacy-graph.json \
+  >.uigraph/tab-legacy-out.json 2>/dev/null
+check "$?" "1" "a session file holding only what Playwright saves lands back on the sign-in form"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("./.uigraph/tab-legacy-out.json");
+  if (!v.load.likelyAuthWall) fail("the walk got in without the tab session, so it proves nothing");
+  if (v.findings.some((f) => /Export workspace/.test(f.control)))
+    fail("a control from behind the sign-in form was reached without a session");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "without the third store the walk sees the door and nothing behind it"
+
+# The same walk, the same app, the whole file: the session is replayed before
+# the first navigation and the app finds it where it left it.
+node dist/cli.js walk "$URL/tab-app" --quiet --json \
+  --storage-state .uigraph/tab-session.json --out .uigraph/tab-graph.json \
+  >.uigraph/tab-out.json 2>/dev/null
+check "$?" "0" "a replayed sessionStorage gets the walk past a tab-scoped sign-in"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("./.uigraph/tab-out.json");
+  if (v.load.likelyAuthWall) fail("still looking at the sign-in form with the session restored");
+  if (!v.findings.some((f) => /Export workspace/.test(f.control)))
+    fail("the walk did not reach the control that only exists behind the tab session: " +
+      JSON.stringify(v.findings.map((f) => f.control)));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the walk reaches and judges a control that only exists once signed in"
+
+# sessionStorage is per origin, and a session that cannot apply must be said
+# out loud rather than turning up later as an unexplained login screen.
+node dist/cli.js walk "http://127.0.0.1:$PORT/tab-app" \
+  --storage-state .uigraph/tab-session.json --out .uigraph/tab-otherorigin-graph.json \
+  >.uigraph/tab-otherorigin-out.txt 2>.uigraph/tab-otherorigin-err.txt
+grep -q 'sessionStorage is per origin' .uigraph/tab-otherorigin-err.txt
+check "$?" "0" "a session saved for another origin is reported, not silently unused"
+
+# Backward compatibility: a file written before any of this existed has no
+# sessionStorage key, and must still read as the session it always was.
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  import("./dist/session.js").then(({ readSessionFile }) => {
+    const legacy = readSessionFile("./.uigraph/tab-session-legacy.json");
+    if (legacy.sessionStorage.length !== 0) fail("a legacy session file grew a third store");
+    const full = readSessionFile("./.uigraph/tab-session.json");
+    if (full.sessionStorage[0].items[0].name !== "acme.tab-session")
+      fail("the sessionStorage half did not survive the round trip");
+    if (JSON.stringify(full.storageState) !== JSON.stringify({ cookies: [], origins: [] }))
+      fail("the half handed to Playwright is not a plain storage state: " +
+        JSON.stringify(full.storageState));
+  });
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a session file written before this change still reads, and the halves stay apart"
+echo "Q: declared field values open a state behind a lookup (issue #20)"
 # The premise: /lookup shows a detail panel only when the field holds a code
 # the app knows. The walker's own `clickgraph-test` is not one, so the panel —
 # and the dead "Void order" on it — is not merely unwalked but absent, and the
@@ -674,6 +1046,7 @@ node -e '
   });
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the field spec parses, refuses nonsense, and overrides only the password rule"
+
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

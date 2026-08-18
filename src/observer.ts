@@ -34,6 +34,20 @@ export interface PageSnapshot {
    * look like an effect.
    */
   formStateHash: string;
+  /**
+   * Hash of the class attributes carried by everything that is not itself a
+   * control. Effect detection only, never identity — the same standing as the
+   * three hashes above.
+   *
+   * The other signals are structural, textual and geometric, and a class flip
+   * on a plain element is none of those. A masked PIN entry moves a dot from
+   * `pin-dot` to `pin-dot filled`: no text, no attribute the element list
+   * carries, no rectangle — so all eleven keys of a working keypad came back
+   * as dead controls (issue #26). The family is wider than the keypad: step
+   * indicators, progress bars, an active-tab underline drawn on a div, the
+   * selected highlight on a custom list item.
+   */
+  classHash: string;
 }
 
 /**
@@ -267,7 +281,27 @@ function extractPageData() {
     };
   });
 
+  // Filtered like every other reader in this function, and for a sharper reason
+  // than consistency: these headings are what state identity is built from, and
+  // markup the user cannot see has no business deciding which screen they are
+  // on. An SPA that keeps all its screens mounted and shows one at a time — a
+  // wizard, a tabbed settings page, a kiosk flow — handed every screen the same
+  // heading list, so identity barely moved as the walk moved. The screens
+  // collapsed into a single node, the walker stopped expanding because it
+  // believed it had been there, and the run still exited 0 over an app it never
+  // got through (issue #25). The landmarks it reported named only hidden
+  // screens: five anchors, not one of them on the page.
+  //
+  // A screen with no visible heading falls back to route-only identity, and
+  // that is left standing on purpose. Two heading-less screens on one route
+  // still collapse — but they collapsed before this too, and the only
+  // tie-breakers on offer are the control list and the body text, which
+  // `structure` already carries precisely because they move whenever anyone
+  // edits the UI. Promoting either into identity would trade a quiet
+  // under-split for a graph that orphans itself every commit, which is the
+  // costlier failure and the one README argues against.
   const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
+    .filter(isVisible)
     .map((h) => (h.textContent || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 
@@ -339,7 +373,46 @@ function extractPageData() {
       .map((el: any, i: number) => `c${i}:${el.checked ? 1 : 0}`),
   ].join('|');
 
-  return { title: document.title, headings, elements, text, visual, formState };
+  // Class attributes, for the effects that are neither text, nor structure, nor
+  // geometry. A masked PIN keypad is the sharpest case — the dots are divs, and
+  // a keypress only adds `filled` to one of them (issue #26) — but any state a
+  // page draws by flipping a class on something that is not a control lands
+  // here: a step rail, a progress bar, a tab underline on a div.
+  //
+  // Scope: every element carrying a class, minus the controls themselves. The
+  // narrower scope the issue also offered — the nearest common container of the
+  // visible controls — is both more work and less safe, because it is derived
+  // from where the CONTROLS are while the elements this signal exists to see
+  // are by definition not controls. A mask sitting above a keypad, or a step
+  // rail beside a wizard's buttons, can fall outside the very box drawn to
+  // contain them, and a signal that can silently exclude the thing it is
+  // looking for is worse than none.
+  //
+  // Dropping the controls is what keeps this from crying wolf, and it is the
+  // whole of the noise budget. A click puts the pointer and the focus ring on
+  // its target, and component libraries mirror both into class names —
+  // `is-hovered`, `is-focused`, `focus-visible` — so a sample that included
+  // them would report an effect for every click ever made. That is the
+  // expensive direction: it does not add noise, it deletes findings. Excluding
+  // controls removes that entire family without a blocklist of framework
+  // spellings, and costs only the control that flips a class on ITSELF and on
+  // nothing else, which is a quiet miss and the trade this project always
+  // takes. Animation classes are already covered by the settle window, which
+  // waits for attribute mutations to stop before either snapshot is taken.
+  //
+  // Tokens are sorted so a framework that re-adds the same classes in a
+  // different order does not read as a change. `className` is only a string on
+  // HTML elements — on SVG it is an SVGAnimatedString — so the attribute is
+  // read directly rather than trusted to be one.
+  const controls = new Set(Array.from(document.querySelectorAll(INTERACTIVE)));
+  const classes = Array.from(document.querySelectorAll('[class]'))
+    .filter((el) => !controls.has(el))
+    .map((el) =>
+      (el.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean).sort().join(' '),
+    )
+    .join('|');
+
+  return { title: document.title, headings, elements, text, visual, formState, classes };
 }
 /* c8 ignore stop */
 
@@ -358,7 +431,99 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
     contentHash: createHash('sha256').update(data.text).digest('hex').slice(0, 12),
     visualHash: createHash('sha256').update(data.visual).digest('hex').slice(0, 12),
     formStateHash: createHash('sha256').update(data.formState).digest('hex').slice(0, 12),
+    classHash: createHash('sha256').update(data.classes).digest('hex').slice(0, 12),
   };
+}
+
+/**
+ * Where the page and each of its scrollable regions are scrolled to.
+ *
+ * Read on its own rather than folded into `captureState`, because unlike every
+ * other signal this one is not a property of the state: the walk moves the page
+ * itself to reach a control, so a scroll offset only means something when both
+ * readings are taken around the action alone (issue #22). The walker owns that
+ * pairing, so the reading has to be something it can ask for by name.
+ */
+export interface ScrollReading {
+  x: number;
+  y: number;
+  /** One entry per element that can scroll, in document order. */
+  panes: { key: string; top: number; left: number }[];
+}
+
+export async function readScrollPositions(page: Page): Promise<ScrollReading | null> {
+  try {
+    return await page.evaluate(() => {
+      // Overflow is checked before the computed style so the expensive call is
+      // made only for the handful of elements that could possibly scroll: the
+      // dimension reads flush layout once and are then answered from cache,
+      // while getComputedStyle on every node of a large app is not free.
+      const scrollable = (v: string) => v === 'auto' || v === 'scroll' || v === 'overlay';
+      const panes: { key: string; top: number; left: number }[] = [];
+      for (const el of Array.from(document.querySelectorAll('*')) as any[]) {
+        const overflowsY = el.scrollHeight > el.clientHeight + 1;
+        const overflowsX = el.scrollWidth > el.clientWidth + 1;
+        if (!overflowsY && !overflowsX) continue;
+        const style = window.getComputedStyle(el);
+        if (!(overflowsY && scrollable(style.overflowY)) &&
+            !(overflowsX && scrollable(style.overflowX))) continue;
+        // Keyed by position and tag, the way form state and transforms are:
+        // identity only has to hold between two readings taken seconds apart.
+        // The class attribute is deliberately not part of the key — a page that
+        // flips a class on its scroller would otherwise lose the pane's
+        // identity and, with it, the reading.
+        panes.push({
+          key: `${panes.length}:${el.tagName}${el.id ? `#${el.id}` : ''}`,
+          top: Math.round(el.scrollTop),
+          left: Math.round(el.scrollLeft),
+        });
+      }
+      return { x: Math.round(window.scrollX), y: Math.round(window.scrollY), panes };
+    });
+  } catch {
+    // The page navigated out from under the read. Not knowing is reported as
+    // not knowing; see compareScroll.
+    return null;
+  }
+}
+
+/**
+ * How far a scroll offset has to move before it counts.
+ *
+ * The walk brings a control into view with Playwright's own scroll before it
+ * takes the baseline, and the click's scroll then finds nothing left to do — so
+ * in principle the residue is zero. In practice a sticky header, a
+ * `scroll-margin` or a sub-pixel device ratio can leave a pixel or two behind,
+ * and every effect this signal exists to catch — back to top, a jump link, a
+ * carousel arrow — moves hundreds. A few pixels of slack costs nothing real and
+ * removes the one way this could report a dead control as working.
+ */
+const SCROLL_TOLERANCE = 4;
+
+export type ScrollChange = 'same' | 'page' | 'region' | 'unknown';
+
+/**
+ * `unknown` is not `same`. A missing reading, or a set of scrollers that has
+ * itself changed between the two, means the comparison cannot be trusted —
+ * and both callers want the cautious reading of that: the walker re-takes its
+ * baseline, and `classifyOutcome` claims no effect it cannot prove.
+ */
+export function compareScroll(
+  before: ScrollReading | null,
+  after: ScrollReading | null,
+): ScrollChange {
+  if (!before || !after) return 'unknown';
+  const moved = (a: number, b: number) => Math.abs(a - b) > SCROLL_TOLERANCE;
+  if (moved(before.x, after.x) || moved(before.y, after.y)) return 'page';
+  if (before.panes.length !== after.panes.length) return 'unknown';
+  let region = false;
+  for (let i = 0; i < before.panes.length; i++) {
+    const a = before.panes[i];
+    const b = after.panes[i];
+    if (a.key !== b.key) return 'unknown';
+    if (moved(a.top, b.top) || moved(a.left, b.left)) region = true;
+  }
+  return region ? 'region' : 'same';
 }
 
 /**
@@ -499,6 +664,13 @@ export function classifyOutcome(
     injectedFailures?: string[];
     chromeEffects?: string[];
     dialogs?: { type: string; message: string }[];
+    /**
+     * What moved between the moment the click was about to land and the moment
+     * it had. Supplied by the walker rather than read off the two snapshots,
+     * because only the walker knows which scrolling was the app's and which was
+     * its own (issue #22).
+     */
+    scrolled?: ScrollChange;
   },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
@@ -565,6 +737,26 @@ export function classifyOutcome(
     return { ...base, ...handled, kind: 'state-changed' };
   }
 
+  // The whole effect was to move the page, or a region of it: back to top, a
+  // jump link, a carousel arrow that slides a strip. No text changes, no
+  // attribute changes, no control changes, so before this the control sat in
+  // the report beside the genuinely unwired ones (issue #22).
+  //
+  // Read BEFORE the visual signal on purpose, even though a window scroll also
+  // moves every rectangle `visual` samples. Both answers are "this control
+  // works"; only one of them says what it did, and "it scrolled the page" is
+  // the more useful sentence to hand a reader than "the view changed visually".
+  if (watch.scrolled === 'page' || watch.scrolled === 'region') {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: watch.scrolled === 'page'
+        ? 'scrolled the page — no text or control changed'
+        : 'scrolled a region of the page — no text or control changed',
+    };
+  }
+
   // Same controls, same words, different picture. Reported as a working control
   // with the reason attached, because "it did something you cannot read in the
   // text" is a true and useful thing to say — and because the alternative was
@@ -575,6 +767,19 @@ export function classifyOutcome(
       ...handled,
       kind: 'state-changed',
       note: 'the view changed visually — no text or control changed',
+    };
+  }
+
+  // An element that is not a control changed its classes: a dot in a PIN mask
+  // filling in, a step marker going active, a highlight moving between custom
+  // list items. The user can see it and no other signal can, so before this the
+  // whole eleven-key keypad reported dead at once (issue #26).
+  if (before.classHash !== after.classHash) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: 'an element changed its class — a state the page draws in CSS, not in text',
     };
   }
 

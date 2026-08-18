@@ -28,7 +28,17 @@
  *      unwired, so a correct walk must reach it AND report it dead.
  *  12. /orders "Retire order" raises a confirm dialog. The safe decline branch
  *      is observable browser chrome, not a dead control (issue #17).
- *  13. /lookup "Void order" — dead, and reachable ONLY by typing a code the
+ *  13. /kiosk keeps six screens mounted and shows one at a time, with every
+ *      heading in the document belonging to a screen the user cannot see. A
+ *      walk that reads hidden headings gives all six the same identity and
+ *      collapses them into one node it never gets past — and still exits 0
+ *      (issue #25). Reached only by walking /kiosk directly.
+ *  14. /tab-app keeps its whole session in sessionStorage, which a Playwright
+ *      storage state does not carry (issue #27). Unlinked from the nav and
+ *      gated in the browser rather than the server: without the tab session
+ *      replayed, a walk of it sees a sign-in form and nothing else, and the
+ *      unwired "Export workspace" button behind it is proof the walk got in.
+ *  15. /lookup "Void order" — dead, and reachable ONLY by typing a code the
  *      app knows into the lookup field first (issue #20). A synthesized value
  *      lands on "no order with that code", where it does not exist at all, so
  *      a walk without --field reports a clean screen and means it.
@@ -74,6 +84,104 @@ const page = (title, body) => `<!doctype html>
 </style></head>
 <body>
 <nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a><a href="/lookup">Look up</a></nav>
+${body}
+</body></html>`;
+
+/**
+ * A kiosk flow in the shape issue #25 was found in: one document, every screen
+ * mounted at once, CSS showing one of them at a time. The entry screen carries
+ * zero visible headings and the five screens parked behind it carry all of
+ * them, so a fingerprint that reads headings straight out of the DOM hands
+ * every screen the same identity, the whole flow collapses to one node, and the
+ * walk stops expanding because it believes it has already been everywhere.
+ *
+ * Nothing here is broken on purpose, and that is the point. The failure this
+ * route exists to catch is not a missed finding but a clean exit 0 over an app
+ * the walk never got through — the one outcome the tool is built to prevent.
+ *
+ * The name buttons are the counterweight. Ana and Bo lead to the same PIN
+ * screen with different text on it, and that has to stay one node: identity is
+ * meant to split on the screen you are looking at, not on everything that
+ * differs between two visits to it.
+ *
+ * Deliberately absent from the shared nav, so a walk from / never wanders in
+ * and every existing expectation about the fixture holds unchanged.
+ */
+const KIOSK = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Shop floor terminal</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  button { padding: .4rem .8rem; margin: .25rem .25rem .25rem 0; }
+  .screen { display: none; }
+  .screen.active { display: block; }
+</style></head>
+<body>
+  <section class="screen active" id="idle">
+    <p>Tap to begin.</p>
+    <button data-testid="kiosk-clock-in" data-goto="who">Clock in</button>
+    <button data-testid="kiosk-supervisor" data-goto="supervisor">Supervisor</button>
+  </section>
+  <section class="screen" id="who">
+    <h2>Who are you?</h2>
+    <button data-testid="kiosk-ana" data-goto="pin" data-name="Ana">Ana</button>
+    <button data-testid="kiosk-bo" data-goto="pin" data-name="Bo">Bo</button>
+    <button data-testid="kiosk-who-back" data-goto="idle">Back</button>
+  </section>
+  <section class="screen" id="pin">
+    <h2>Enter your PIN</h2>
+    <p id="pin-who"></p>
+    <button data-testid="kiosk-confirm" data-goto="hello">Confirm</button>
+    <button data-testid="kiosk-pin-back" data-goto="who">Back</button>
+  </section>
+  <section class="screen" id="hello">
+    <h2>Hello</h2>
+    <p>You are clocked in.</p>
+    <button data-testid="kiosk-done" data-goto="idle">Done</button>
+  </section>
+  <section class="screen" id="supervisor">
+    <h2>Supervisor menu</h2>
+    <button data-testid="kiosk-reports" data-goto="reports">Reports</button>
+    <button data-testid="kiosk-sup-back" data-goto="idle">Back</button>
+  </section>
+  <section class="screen" id="reports">
+    <h2>Shift reports</h2>
+    <p>Nothing recorded for this shift.</p>
+    <button data-testid="kiosk-reports-back" data-goto="supervisor">Back</button>
+  </section>
+  <script>
+    // Screens are shown and hidden, never mounted and unmounted. A framework
+    // would do the same thing with a class or a hidden attribute; the DOM the
+    // walker reads is identical either way.
+    const show = (id) => {
+      for (const s of document.querySelectorAll('.screen')) {
+        s.classList.toggle('active', s.id === id);
+      }
+    };
+    for (const b of document.querySelectorAll('button[data-goto]')) {
+      b.addEventListener('click', () => {
+        if (b.dataset.name) {
+          document.getElementById('pin-who').textContent = 'Signing in as ' + b.dataset.name;
+        }
+        show(b.dataset.goto);
+      });
+    }
+  </script>
+</body></html>`;
+
+/**
+ * A page with no nav, for the cases that have to be walked on their own.
+ *
+ * The two below are about what a snapshot can and cannot see, and both depend
+ * on the exact order their controls are walked in — a PIN mask fills up as the
+ * keys are pressed, and a scroll check needs the page to still be at the top
+ * when it reaches the control below the fold. Six nav links in front of them
+ * would put a navigation and a replay between every pair of presses, and drag
+ * the rest of the app into a walk that is not about it.
+ */
+const bare = (title, body) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>${title}</title>
+<style>body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }</style>
+</head><body>
 ${body}
 </body></html>`;
 
@@ -319,6 +427,144 @@ const routes = {
           ? '<button id="beep" data-testid="beep">Beep</button>' : '';
       });
     </script>`),
+
+  '/kiosk': KIOSK,
+  /*
+   * The masked PIN keypad of issue #26: eleven working controls whose entire
+   * effect is a class on something that is not a control.
+   *
+   * The dots are plain divs. A keypress moves one from `pin-dot` to
+   * `pin-dot filled` — no text, no attribute the element list carries, no
+   * rectangle, nothing on body or :root — so every signal the snapshot had came
+   * back byte-identical and all eleven keys were reported dead at once.
+   *
+   * The fifth press wraps back to the first dot rather than ignoring the
+   * keystroke. A keypad that went quiet once the mask was full would make keys
+   * 5 through 0 honestly no-effect, and the check would then be measuring the
+   * fixture instead of the tool.
+   *
+   * "Forgot your PIN?" is wired to nothing, and it is the guard on the whole
+   * fix: a class signal sensitive enough to see a dot fill must still leave
+   * this one dead. Being too sensitive here does not add noise, it deletes the
+   * findings the tool exists to produce.
+   */
+  '/keypad': bare('Enter your PIN', `
+    <h1>Enter your PIN</h1>
+    <div id="mask">
+      <div class="pin-dot"></div><div class="pin-dot"></div>
+      <div class="pin-dot"></div><div class="pin-dot"></div>
+    </div>
+    <div id="pad">
+      <button>1</button><button>2</button><button>3</button>
+      <button>4</button><button>5</button><button>6</button>
+      <button>7</button><button>8</button><button>9</button>
+      <button>0</button><button>Back</button>
+    </div>
+    <p><button id="pin-help">Forgot your PIN?</button></p>
+    <style>
+      #mask { display: flex; gap: .5rem; margin: 1rem 0 }
+      .pin-dot { width: 1rem; height: 1rem; border-radius: 50%; border: 2px solid #333 }
+      .pin-dot.filled { background: #333 }
+      #pad button { width: 3rem; padding: .4rem }
+    </style>
+    <script>
+      const dots = () => Array.from(document.querySelectorAll('.pin-dot'));
+      const filled = () => dots().filter((d) => d.classList.contains('filled'));
+      document.querySelectorAll('#pad button').forEach((key) => {
+        key.addEventListener('click', () => {
+          if (key.textContent === 'Back') {
+            filled().pop()?.classList.remove('filled');
+            return;
+          }
+          const all = dots();
+          if (filled().length === all.length) all.forEach((d) => d.classList.remove('filled'));
+          all[filled().length].classList.add('filled');
+        });
+      });
+      // "Forgot your PIN?" is intentionally wired to nothing at all.
+    </script>`),
+
+  /*
+   * The scrolling controls of issue #22, and the trap that comes with them.
+   *
+   * "Scroll the notes" moves a region, "Back to top" moves the window. Neither
+   * changes a character of text, an attribute or a control, so both used to
+   * land in the report beside the genuinely unwired ones.
+   *
+   * "Share release notes" is the reason the filler below is 2400px tall. It is
+   * wired to nothing and it sits far below the fold, so the walk has to scroll
+   * to reach it — which means a naive before/after reading of window.scrollY
+   * calls it a working scroller, and a baseline taken before the scroll-into-
+   * view makes even the viewport-relative geometry in `visual` disagree with
+   * itself. Both mistakes report a dead control as working. A check without a
+   * dead control this far down the page would pass for the wrong reason.
+   */
+  '/release-notes': bare('Release notes', `
+    <h1>Release notes</h1>
+    <div id="notes">
+      <p>2.4.0 — the walker learned to read scroll position.</p>
+      <p>2.3.0 — class attributes joined the snapshot.</p>
+      <p>2.2.0 — dialogs are observed rather than feared.</p>
+      <p>2.1.0 — faults can be injected for a whole walk.</p>
+      <p>2.0.0 — controls revealed by a self-loop are walked.</p>
+      <p>1.9.0 — form values are read off the properties.</p>
+      <p>1.8.0 — browser chrome effects are reported by a shim.</p>
+      <p>1.7.0 — geometry and colour became an effect signal.</p>
+    </div>
+    <p><button id="scroll-notes">Scroll the notes</button></p>
+    <div id="filler">A very long changelog lives here.</div>
+    <p><button id="back-to-top">Back to top</button></p>
+    <p><button id="share-notes">Share release notes</button></p>
+    <style>
+      #notes { height: 6rem; overflow-y: auto; border: 1px solid #333; padding: 0 .5rem }
+      #filler { height: 2400px; background: #f0f0f0 }
+    </style>
+    <script>
+      document.getElementById('scroll-notes').addEventListener('click', () => {
+        document.getElementById('notes').scrollTop += 120;
+      });
+      document.getElementById('back-to-top').addEventListener('click', () => {
+        window.scrollTo(0, 0);
+      });
+      // "Share release notes" is intentionally wired to nothing at all.
+    </script>`),
+  // The app of issue #27: its session lives in sessionStorage, so a Playwright
+  // storage state saves nothing of it. Deliberately standalone — no nav, no
+  // cookie, no server-side gate — so a walk of this route sees the door and
+  // only the door until the tab session is replayed into it.
+  '/tab-app': `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Tab workspace</title></head>
+<body>
+  <div id="root"></div>
+  <script>
+    // Per tab, not for ever: office machines are shared, and a session that
+    // outlives the tab is the thing this app refuses to have.
+    const KEY = 'acme.tab-session';
+    function render() {
+      const root = document.getElementById('root');
+      if (sessionStorage.getItem(KEY) !== null) {
+        // Only reachable with the tab session present, and wired to nothing:
+        // a walk that reports this button is a walk that really got inside.
+        root.innerHTML = '<h1>Tab workspace</h1><p>Signed in, for this tab only.</p>' +
+          '<button id="tab-export" data-testid="tab-export">Export workspace</button>';
+        return;
+      }
+      root.innerHTML = '<h1>Sign in</h1>' +
+        '<form id="tab-signin">' +
+        '<p><label>Email <input type="email" id="tab-email" name="email" required></label></p>' +
+        '<p><label>Password <input type="password" id="tab-password" name="password" required></label></p>' +
+        '<button type="submit">Sign in</button></form>';
+      document.getElementById('tab-signin').addEventListener('submit', (e) => {
+        e.preventDefault();
+        sessionStorage.setItem(KEY, JSON.stringify({
+          user: document.getElementById('tab-email').value, token: 'tab-token-1042',
+        }));
+        render();
+      });
+    }
+    render();
+  </script>
+</body></html>`,
 };
 
 createServer((req, res) => {
