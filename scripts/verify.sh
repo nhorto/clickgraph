@@ -684,6 +684,89 @@ node -e '
     fail(`edgesUnwalked ${coverage.edgesUnwalked} leaves out ${unrecorded.length} control(s) on screens never recorded`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "screens dropped by the state budget still name their controls"
+echo "N: a class flip on an element that is not a control is an effect (#26)"
+# Walked on its own: the keypad fills up as its keys are pressed, so the order
+# they are reached in is part of what is being tested.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/keypad" --quiet --out /tmp/clickgraph-keypad.json \
+  >/tmp/clickgraph-keypad.txt 2>&1
+check "$?" "0" "the keypad walk succeeds"
+# All eleven keys work, and every one of them works by moving a dot between
+# `pin-dot` and `pin-dot filled` — a class on a div. No text, no attribute the
+# element list carries, no rectangle, nothing on body or :root, so every signal
+# the snapshot had came back byte-identical and the whole keypad reported dead
+# at once (issue #26).
+#
+# The graph path is passed as an argument rather than written into the script,
+# so the reading and the writing agree about where /tmp is on every platform
+# this runs on.
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  for (const key of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "Back"]) {
+    const edge = graph.edges.find((e) => e.action.name === key);
+    if (!edge) fail(`key ${key} was never walked`);
+    if (edge.outcome.kind !== "state-changed") fail(`key ${key} came back ${edge.outcome.kind}`);
+    if (!/changed its class/.test(edge.outcome.note ?? ""))
+      fail(`key ${key} does not say what it did: ${edge.outcome.note}`);
+  }
+' /tmp/clickgraph-keypad.json
+check "$?" "0" "every key of the masked PIN keypad is reported as working"
+# The guard, which matters more than the fix it guards. A class signal
+# sensitive enough to see a dot fill must still leave the unwired control on
+# the same screen dead — being too sensitive here does not add noise, it
+# deletes the findings the tool exists to produce.
+grep -q 'NO EFFECT.*"Forgot your PIN?"' /tmp/clickgraph-keypad.txt
+check "$?" "0" "still reports the unwired control beside the keypad as dead"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = graph.edges.find((e) => /Forgot your PIN/.test(e.action.name));
+  if (!dead) fail("the unwired control was never walked");
+  if (dead.outcome.kind !== "no-effect") fail(`the unwired control came back ${dead.outcome.kind}`);
+  if (dead.outcome.benign) fail("the unwired control was excused instead of reported");
+' /tmp/clickgraph-keypad.json
+check "$?" "0" "the unwired keypad control is still a finding, not an excused one"
+
+echo "O: a control whose only effect is scrolling is not a dead control (#22)"
+node dist/cli.js walk "$URL/release-notes" --quiet --out /tmp/clickgraph-scroll.json \
+  >/tmp/clickgraph-scroll.txt 2>&1
+check "$?" "0" "the scrolling walk succeeds"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const walked = (name) => {
+    const edge = graph.edges.find((e) => new RegExp(name).test(e.action.name));
+    if (!edge) fail(`${name} was never walked`);
+    return edge;
+  };
+  const page = walked("Back to top");
+  if (page.outcome.kind !== "state-changed") fail(`back to top came back ${page.outcome.kind}`);
+  if (!/scrolled the page/.test(page.outcome.note ?? ""))
+    fail(`back to top does not say what it did: ${page.outcome.note}`);
+  const region = walked("Scroll the notes");
+  if (region.outcome.kind !== "state-changed") fail(`the pane scroller came back ${region.outcome.kind}`);
+  if (!/scrolled a region/.test(region.outcome.note ?? ""))
+    fail(`the pane scroller does not say what it did: ${region.outcome.note}`);
+' /tmp/clickgraph-scroll.json
+check "$?" "0" "reports the window scroller and the in-element scroller as working"
+# The trap, and the reason /release-notes puts 2400px above this control: the
+# walk scrolls to reach anything below the fold, so a reading taken across that
+# scroll instead of across the click alone vouches for every dead control down
+# there. This one came back "changed state — the view changed visually" before
+# the fix, on the strength of the walk's own scrolling and nothing else.
+grep -q 'NO EFFECT.*"Share release notes"' /tmp/clickgraph-scroll.txt
+check "$?" "0" "still reports the dead control below the fold as dead"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = graph.edges.find((e) => /Share release notes/.test(e.action.name));
+  if (!dead) fail("the dead control below the fold was never walked");
+  if (dead.outcome.kind !== "no-effect") fail(`it came back ${dead.outcome.kind}: ${dead.outcome.note}`);
+  if (dead.outcome.benign) fail("it was excused instead of reported");
+' /tmp/clickgraph-scroll.json
+check "$?" "0" "the walk own scroll-into-view is never credited to the control it reached"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]

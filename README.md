@@ -339,6 +339,23 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
   and alert dialogs are recorded per action and dismissed so an autonomous walk
   never authorizes the guarded branch. The edge says the dialog was raised and
   that its accept branch remains unwalked, instead of calling the control dead.
+- **A class on something that is not a control is a state the user can see.** A
+  masked PIN entry fills its dots by moving a div from `pin-dot` to
+  `pin-dot filled` — no text, no attribute, no rectangle — so all eleven keys of
+  a working keypad reported dead at once. Class attributes are now their own
+  effect signal, sampled everywhere except on the controls themselves: a click
+  lands the pointer and the focus ring on its target, and libraries mirror both
+  into class names, so including controls would report an effect for every click
+  ever made. The same signal covers step rails, progress bars and a tab
+  underline drawn on a div.
+- **The walk scrolls to reach a control, and must not take credit for it.**
+  Playwright's click auto-scrolls its target, so a reading taken across that
+  scroll calls every control below the fold a working scroller — and because the
+  visual signal samples viewport-relative rectangles, it was already vouching
+  for dead buttons on the strength of the walk's own movement. The scroll now
+  happens first and deliberately, and the baseline is re-read from where the
+  click will actually land. What is left between the two readings is the action:
+  a back-to-top button, a jump link, a carousel arrow moving a strip.
 
 ## Layout
 

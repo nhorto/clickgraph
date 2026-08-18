@@ -8,7 +8,8 @@ import type {
 import { GRAPH_VERSION } from './types.js';
 import { CLICKGRAPH_VERSION } from './version.js';
 import {
-  ActionWatch, captureState, classifyOutcome, instrumentChromeEffects, resolve,
+  ActionWatch, captureState, classifyOutcome, compareScroll, instrumentChromeEffects,
+  readScrollPositions, resolve,
   type PageSnapshot,
 } from './observer.js';
 import { normalizeRoute, normalizeText } from './fingerprint.js';
@@ -306,6 +307,38 @@ async function settle(page: Page, quietMs: number): Promise<void> {
       { quiet: quietMs, cap: 3000 },
     )
     // The context is torn down if the click navigated; that is not an error.
+    .catch(() => {});
+}
+
+/**
+ * Do the scrolling the click was going to do anyway, first and on purpose.
+ *
+ * Playwright scrolls a control into view before it clicks it, so by the time an
+ * action lands the page can be sitting somewhere the baseline snapshot has
+ * never seen. Every control below the fold then looks like it moved the page,
+ * which would make the scroll signal useless and — because `visual` samples
+ * viewport-relative rectangles — already made dead controls read as working
+ * (issue #22). Doing it here means the baseline is taken from exactly where the
+ * click will happen, and what is left between the two readings is the action
+ * and nothing else.
+ *
+ * A failure is swallowed: the click that follows fails for the same reason and
+ * reports it properly, through `whyNotActionable`, which is the one place that
+ * says so in the app's terms.
+ *
+ * Given a much shorter budget than the click for exactly that reason. This is a
+ * measurement aid, not an actionability gate, and the control that can never be
+ * scrolled into view — parked in a closed drawer, transformed off-screen —
+ * would otherwise burn the full action timeout here and then the full action
+ * timeout again on the click. Scrolling an element that can be scrolled is
+ * immediate; anything that needs longer than this is a control the click is
+ * about to give up on anyway.
+ */
+const REVEAL_TIMEOUT = 500;
+
+async function bringIntoView(page: Page, selector: Selector): Promise<void> {
+  await resolve(page, selector)
+    .scrollIntoViewIfNeeded({ timeout: REVEAL_TIMEOUT })
     .catch(() => {});
 }
 
@@ -704,7 +737,25 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           });
           continue;
         }
-        const before = atSnapshot;
+        // Reveal the control and re-read the baseline from where it now sits,
+        // so the scroll reading either side of the click is attributable to the
+        // click. The re-read is skipped when nothing moved — the common case,
+        // and the reason this costs nothing on a page that fits the viewport —
+        // and an unreadable comparison counts as movement, because a baseline
+        // taken again is only slower, while a baseline left stale is wrong.
+        // The settle is for apps that load content as it scrolls into view:
+        // without it that content arrives between the two snapshots and the
+        // click is credited with fetching it.
+        const beforeReveal = await readScrollPositions(page);
+        await bringIntoView(page, target);
+        let scrollBefore = await readScrollPositions(page);
+        let before = atSnapshot;
+        if (compareScroll(beforeReveal, scrollBefore) !== 'same') {
+          await settle(page, config.settleMs);
+          scrollBefore = await readScrollPositions(page);
+          before = await captureState(page);
+          atSnapshot = before;
+        }
         const action: Action = choice
           ? {
               kind: 'select', selector: target, role: el.role, name: el.name,
@@ -746,30 +797,56 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           continue;
         }
 
+        const scrollAfter = await readScrollPositions(page);
         let after = await captureState(page);
         atSnapshot = after;
-        let outcome = classifyOutcome(before, after, observed, el);
+        let outcome = classifyOutcome(
+          before, after,
+          { ...observed, scrolled: compareScroll(scrollBefore, scrollAfter) },
+          el,
+        );
 
         // A control that looks hover-driven and did nothing when clicked has not
         // been tested yet — it has been tested the wrong way. Try hovering
         // before calling it dead; an entire dashboard of glossary terms reads as
         // broken otherwise.
         if (outcome.kind === 'no-effect' && !outcome.benign && el.hoverAffordance) {
-          const hoverWatch = new ActionWatch(page);
+          let hoverBefore = after;
+          let hoverScrollBefore = scrollAfter;
           try {
             // The pointer is still sitting on the element after the click, so
             // hovering it again fires no pointerenter. Move away first, or the
             // probe silently tests nothing.
             await page.mouse.move(0, 0);
             await page.waitForTimeout(50);
+            // Then the same baseline discipline the click above uses: hover
+            // scrolls to its target too, and a probe measured across that
+            // scroll would credit the hover with moving the page (issue #22).
+            await bringIntoView(page, target);
+            hoverScrollBefore = await readScrollPositions(page);
+            if (compareScroll(scrollAfter, hoverScrollBefore) !== 'same') {
+              await settle(page, config.settleMs);
+              hoverScrollBefore = await readScrollPositions(page);
+              hoverBefore = await captureState(page);
+            }
+          } catch {
+            /* the probe below fails for the same reason and keeps the click result */
+          }
+          const hoverWatch = new ActionWatch(page);
+          try {
             await resolve(page, target).hover({ timeout: ACTION_TIMEOUT });
             await settle(page, config.settleMs);
           } catch {
             /* not hoverable either — keep the click result */
           }
           const hoverObserved = hoverWatch.stop();
+          const hoverScrollAfter = await readScrollPositions(page);
           const afterHover = await captureState(page);
-          const hoverOutcome = classifyOutcome(after, afterHover, hoverObserved, el);
+          const hoverOutcome = classifyOutcome(
+            hoverBefore, afterHover,
+            { ...hoverObserved, scrolled: compareScroll(hoverScrollBefore, hoverScrollAfter) },
+            el,
+          );
           if (hoverOutcome.kind !== 'no-effect') {
             action.kind = 'hover';
             outcome = { ...hoverOutcome, note: 'responds to hover, not to click' };
