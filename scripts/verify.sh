@@ -16,6 +16,11 @@
 #   J  declared routes expose screens that fixture state left unreachable
 #   K  a safely dismissed confirm dialog is observed, not called a dead control
 #   L  a screen CSS is hiding does not lend its headings to the one on screen
+#   M  every enumerated control ends as an edge or a skip with a reason
+#   N  a class flip on an element that is not a control is a visible effect
+#   O  a control whose only effect is scrolling is not a dead control
+#   P  a session kept in sessionStorage is saved, replayed, and gets a walk
+#      past a sign-in screen no storage state could open
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -766,6 +771,146 @@ node -e '
   if (dead.outcome.benign) fail("it was excused instead of reported");
 ' /tmp/clickgraph-scroll.json
 check "$?" "0" "the walk own scroll-into-view is never credited to the control it reached"
+echo "P: a session kept in sessionStorage is said out loud, and carried (issue #27)"
+# /tab-app holds its whole session in sessionStorage, which Playwright's storage
+# state does not carry. `login` blocks on a keypress, so what runs below is
+# everything login does AFTER that keypress, against a context signed in by
+# script instead of by hand. The keypress itself is the only part no check here
+# can stand in for.
+start_fixture PORT="$PORT"
+# Written beside the graph rather than in a temp dir: this file is the subject
+# of the check, one process writes it and another reads it, and .uigraph is
+# already gitignored precisely because a session file holds live cookies.
+mkdir -p .uigraph
+rm -f .uigraph/tab-session.json
+CLICKGRAPH_URL="$URL" node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  (async () => {
+    const { chromium } = await import("playwright");
+    const { saveSignedInSession } = await import("./dist/login.js");
+    const browser = await chromium.launch();
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(process.env.CLICKGRAPH_URL + "/tab-app");
+    await page.fill("#tab-email", "walker@example.com");
+    await page.fill("#tab-password", "not-read-by-anything");
+    await page.click("button[type=submit]");
+    await page.waitForSelector("[data-testid=tab-export]");
+    const said = [];
+    await saveSignedInSession(context, "./.uigraph/tab-session.json", (m) => said.push(m));
+    await browser.close();
+    const heard = said.join(" | ");
+    if (!/Session saved to/.test(heard)) fail("login stopped reporting where it saved: " + heard);
+    if (!/NOTE.*sessionStorage/.test(heard))
+      fail("login said nothing about the store its session turned out to live in: " + heard);
+    if (!/replayed into the walk/.test(heard))
+      fail("the note does not say what will happen instead: " + heard);
+    // The diagnosis itself, asserted rather than assumed: what Playwright saves
+    // for this app is empty, which is why the other half of the file exists.
+    const saved = require("./.uigraph/tab-session.json");
+    if (saved.cookies.length !== 0 || saved.origins.length !== 0)
+      fail("the fixture no longer reproduces the issue: " + JSON.stringify(saved));
+    // The file format, and the property the issue asked of it: every entry says
+    // which of the three stores it came from.
+    if (saved.sessionStorage[0].origin !== process.env.CLICKGRAPH_URL)
+      fail("the saved sessionStorage does not name its origin: " + JSON.stringify(saved));
+    if (saved.sessionStorage[0].items[0].name !== "acme.tab-session")
+      fail("the session key itself was not saved: " + JSON.stringify(saved));
+  })().catch((e) => fail(String((e && e.stack) || e)));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "login saves the sessionStorage half, labelled, and says it had to"
+
+# The other half of being right: an app that keeps a wizard step in
+# sessionStorage and its session in a cookie must hear nothing. A warning that
+# fires on ordinary sessionStorage use is a warning everyone learns to ignore.
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  import("./dist/session.js").then(({ sessionStorageOnlyOrigins }) => {
+    const scratch = [{ origin: "https://app.example.com", items: [{ name: "wizard.step", value: "2" }] }];
+    const cookie = (domain) => ({
+      cookies: [{ name: "sid", value: "x", domain, path: "/", expires: -1,
+        httpOnly: true, secure: true, sameSite: "Lax" }],
+      origins: [],
+    });
+    if (sessionStorageOnlyOrigins(cookie("app.example.com"), scratch).length !== 0)
+      fail("an app whose session is a cookie was warned about its scratch sessionStorage");
+    if (sessionStorageOnlyOrigins(cookie(".example.com"), scratch).length !== 0)
+      fail("a parent-domain cookie was not recognised as covering this origin");
+    if (sessionStorageOnlyOrigins(cookie("auth.unrelated.test"), scratch).length !== 1)
+      fail("a cookie for an unrelated host was counted as this origin session");
+    const local = { cookies: [], origins: [
+      { origin: "https://app.example.com", localStorage: [{ name: "token", value: "y" }] },
+    ] };
+    if (sessionStorageOnlyOrigins(local, scratch).length !== 0)
+      fail("an app whose session is in localStorage was warned about it anyway");
+    if (sessionStorageOnlyOrigins({ cookies: [], origins: [] }, scratch)[0] !== "https://app.example.com")
+      fail("an origin with nothing saved but sessionStorage was not reported");
+    if (sessionStorageOnlyOrigins({ cookies: [], origins: [] }, []).length !== 0)
+      fail("an app with no sessionStorage at all was warned about it");
+  });
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "sessionStorage kept beside a real cookie session is not warned about"
+
+# The failure the issue reports, reproduced exactly: the same session with its
+# sessionStorage half removed is all the old format could hold.
+node -e '
+  const fs = require("node:fs");
+  const { sessionStorage, ...playwrightHalf } = require("./.uigraph/tab-session.json");
+  fs.writeFileSync("./.uigraph/tab-session-legacy.json", JSON.stringify(playwrightHalf));
+' 2>>/tmp/clickgraph-json-err.txt
+node dist/cli.js walk "$URL/tab-app" --quiet --json \
+  --storage-state .uigraph/tab-session-legacy.json --out .uigraph/tab-legacy-graph.json \
+  >.uigraph/tab-legacy-out.json 2>/dev/null
+check "$?" "1" "a session file holding only what Playwright saves lands back on the sign-in form"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("./.uigraph/tab-legacy-out.json");
+  if (!v.load.likelyAuthWall) fail("the walk got in without the tab session, so it proves nothing");
+  if (v.findings.some((f) => /Export workspace/.test(f.control)))
+    fail("a control from behind the sign-in form was reached without a session");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "without the third store the walk sees the door and nothing behind it"
+
+# The same walk, the same app, the whole file: the session is replayed before
+# the first navigation and the app finds it where it left it.
+node dist/cli.js walk "$URL/tab-app" --quiet --json \
+  --storage-state .uigraph/tab-session.json --out .uigraph/tab-graph.json \
+  >.uigraph/tab-out.json 2>/dev/null
+check "$?" "0" "a replayed sessionStorage gets the walk past a tab-scoped sign-in"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("./.uigraph/tab-out.json");
+  if (v.load.likelyAuthWall) fail("still looking at the sign-in form with the session restored");
+  if (!v.findings.some((f) => /Export workspace/.test(f.control)))
+    fail("the walk did not reach the control that only exists behind the tab session: " +
+      JSON.stringify(v.findings.map((f) => f.control)));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the walk reaches and judges a control that only exists once signed in"
+
+# sessionStorage is per origin, and a session that cannot apply must be said
+# out loud rather than turning up later as an unexplained login screen.
+node dist/cli.js walk "http://127.0.0.1:$PORT/tab-app" \
+  --storage-state .uigraph/tab-session.json --out .uigraph/tab-otherorigin-graph.json \
+  >.uigraph/tab-otherorigin-out.txt 2>.uigraph/tab-otherorigin-err.txt
+grep -q 'sessionStorage is per origin' .uigraph/tab-otherorigin-err.txt
+check "$?" "0" "a session saved for another origin is reported, not silently unused"
+
+# Backward compatibility: a file written before any of this existed has no
+# sessionStorage key, and must still read as the session it always was.
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  import("./dist/session.js").then(({ readSessionFile }) => {
+    const legacy = readSessionFile("./.uigraph/tab-session-legacy.json");
+    if (legacy.sessionStorage.length !== 0) fail("a legacy session file grew a third store");
+    const full = readSessionFile("./.uigraph/tab-session.json");
+    if (full.sessionStorage[0].items[0].name !== "acme.tab-session")
+      fail("the sessionStorage half did not survive the round trip");
+    if (JSON.stringify(full.storageState) !== JSON.stringify({ cookies: [], origins: [] }))
+      fail("the half handed to Playwright is not a plain storage state: " +
+        JSON.stringify(full.storageState));
+  });
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "a session file written before this change still reads, and the halves stay apart"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
