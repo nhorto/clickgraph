@@ -66,6 +66,18 @@ Deliberately split in two, because one half is much cheaper than the other:
       belong together. Currently skipped, which is honest, and a real gap.
 - [ ] Keep walking new real apps; each one so far has found a false-positive
       class the fixture could not (see README).
+- [x] `--fail-requests` makes matching requests fail for the whole walk, so
+      error banners, retry buttons and offline states stop being structurally
+      invisible (issue #15). The judgment inverts: a control that fires a
+      failing request and changes nothing swallowed the failure, and that is
+      the finding; one that renders a banner is working. The dogfooding app's
+      entire error surface — every retry control, and a queue UI that only
+      renders when a send fails — had component tests as its only automated
+      proof, because no walk could reach any of it.
+- [ ] Named scenarios (`--scenario offline`) and a request-interception hook,
+      the other two shapes issue #15 sketched. Blanket mode first, because one
+      extra walk diffed against its own baseline covers most of the value; a
+      second real app should rank these before they get built.
 
 ## Phase 3 — a fast inner loop
 

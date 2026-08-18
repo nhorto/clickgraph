@@ -101,6 +101,14 @@ export interface Outcome {
   network: NetworkCall[];
   consoleErrors: string[];
   httpErrors: string[];
+  /**
+   * Failed requests the walk caused itself, under `--fail-requests`.
+   *
+   * Kept apart from `httpErrors` so a fault walk stays readable: without the
+   * split, every edge in the run reports the sabotage as a defect and the app's
+   * own errors are buried among hundreds of deliberate ones.
+   */
+  injectedFailures?: string[];
   note?: string;
   /**
    * The outcome is expected rather than a defect — e.g. a link pointing at the
@@ -198,6 +206,29 @@ export interface WalkConfig {
   expectedRoutes?: string[];
   /** Route manifest to re-read on diff so newly declared screens are asserted. */
   expectedRoutesFile?: string;
+  /**
+   * Requests to fail on purpose for the whole walk, so error and retry UI
+   * becomes reachable. Recorded because a fault walk and a healthy walk
+   * describe different apps: diffing one against the other reports every
+   * screen as regressed, which is why the config warning for a mismatch is
+   * the loudest one the tool emits.
+   */
+  fault?: FaultInjection;
+}
+
+/**
+ * A deliberate failure applied to matching requests for the duration of a walk.
+ *
+ * Not a scenario list yet (issue #15 sketches those): one blanket mode, one
+ * extra walk, diffed against its own baseline, is what covers most of the value.
+ */
+export interface FaultInjection {
+  /** Glob over the request URL — `*` stops at `/`, `**` does not. */
+  pattern: string;
+  /** Status to answer with, or `offline` to drop the connection outright. */
+  status: number | 'offline';
+  /** Restrict to these HTTP methods. Empty means every method. */
+  methods?: string[];
 }
 
 /**
@@ -210,6 +241,13 @@ export interface WalkConfig {
 export interface LoadHealth {
   consoleErrors: string[];
   httpErrors: string[];
+  /**
+   * Failures the walk injected during load. Held apart from `httpErrors` so a
+   * fault walk is not condemned as unhealthy for doing exactly what it was
+   * asked to do — an app whose entry screen fetches through the broken pattern
+   * would otherwise fail its own run before clicking anything.
+   */
+  injectedFailures?: string[];
   /** Controls found on the entry page. Zero means the walk saw nothing to do. */
   interactiveFound: number;
   /**

@@ -5,8 +5,9 @@ import { DEFAULT_GRAPH_PATH, diffGraphs, loadGraph, saveGraph } from './graph.js
 import { reportDiff, reportWalk } from './report.js';
 import { diffVerdict, walkVerdict } from './verdict.js';
 import { captureLogin } from './login.js';
-import type { WalkConfig } from './types.js';
+import type { FaultInjection, WalkConfig } from './types.js';
 import type { WalkOptions } from './walker.js';
+import { faultSpec, parseFaultSpec } from './fault.js';
 import { CLICKGRAPH_VERSION, clickgraphVersionWarning } from './version.js';
 import { normalizeRoute } from './fingerprint.js';
 import { warnIfStaleLocalBuild } from './build.js';
@@ -30,6 +31,9 @@ interface Args {
   storageState?: string;
   expectRoutesPath?: string;
   expectedRoutes?: string[];
+  fault?: FaultInjection;
+  /** `--no-fail-requests` on a diff whose baseline injected faults. */
+  faultCleared?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -63,6 +67,16 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--no-expect-routes') {
       args.expectRoutesPath = undefined;
       args.expectedRoutes = [];
+    } else if (arg === '--fail-requests') {
+      const spec = rest[++i];
+      if (!spec || spec.startsWith('-')) {
+        throw new Error('--fail-requests needs a pattern, e.g. --fail-requests "POST /api/*"');
+      }
+      args.fault = parseFaultSpec(spec);
+      args.faultCleared = false;
+    } else if (arg === '--no-fail-requests') {
+      args.fault = undefined;
+      args.faultCleared = true;
     }
     else if (!arg.startsWith('-')) args.url = arg;
   }
@@ -99,6 +113,22 @@ Options
                         successfully writes real data. Without it a form is
                         reported as skipped, never as working
   --no-fill-forms       override a diff baseline that enabled form filling
+  --fail-requests <spec>
+                        fail matching requests for the whole walk, so error
+                        banners, retry buttons and offline states become
+                        reachable instead of invisible. A control that fires a
+                        failing request and changes nothing on screen is the
+                        finding: the app swallowed the failure.
+                          "/api/*"            match, answer 500
+                          "/api/*@503"        answer 503
+                          "/api/*@offline"    drop the connection
+                          "POST,PUT /api/*"   only writes fail, so the screens
+                                              still load and stay walkable
+                        A fault walk needs its OWN baseline — diffing it
+                        against a healthy one reports the entire app as
+                        regressed. Inherited by diff, and warned about loudly
+                        when the two disagree
+  --no-fail-requests    walk healthily against a baseline that injected faults
   --pre <command>       run a shell command before opening the browser; a
                         non-zero exit aborts the walk. Recorded in the graph,
                         but must be repeated explicitly for diff
@@ -160,6 +190,12 @@ function optionsFor(args: Args, baseline?: WalkConfig): WalkOptions {
     expectedRoutesFile: args.expectRoutesPath ?? (
       args.expectedRoutes === undefined ? baseline?.expectedRoutesFile : undefined
     ),
+    // Inherited, unlike `pre` and `allowDangerous`. Those are withheld because
+    // replaying them runs a stored command or destroys data; a fault only makes
+    // requests fail, which is strictly safer than the walk it modifies. And a
+    // diff that silently dropped it would compare a healthy app against a
+    // broken one and call the whole app regressed.
+    fault: args.faultCleared ? undefined : (args.fault ?? baseline?.fault),
     pre: args.pre,
     onProgress: args.quiet || args.json ? undefined : (m: string) => console.error(`  ${m}`),
   };
@@ -223,6 +259,24 @@ function configWarnings(args: Args, baseline: WalkConfig, url: string): string[]
     baseline.storageState,
     'the two runs may see different authenticated UI',
   );
+
+  // The loudest mismatch there is. A healthy walk and a fault walk describe two
+  // different apps, so crossing them reports every error screen as missing and
+  // every working screen as new — a wall of regressions with no real defect in
+  // it. The inherit rule above makes this reachable only by asking for it.
+  const effectiveFault = args.faultCleared ? undefined : (args.fault ?? baseline.fault);
+  const effectiveSpec = effectiveFault ? faultSpec(effectiveFault) : undefined;
+  const baselineSpec = baseline.fault ? faultSpec(baseline.fault) : undefined;
+  if (effectiveSpec !== baselineSpec) {
+    warnings.push(
+      baselineSpec && effectiveSpec === undefined
+        ? `the baseline injected failures (--fail-requests ${baselineSpec}), but this diff will not — ` +
+          'it walks a healthy app against a broken-app baseline, so every error screen will read as missing'
+        : `--fail-requests is ${JSON.stringify(effectiveSpec ?? null)}, but the baseline recorded ` +
+          `${JSON.stringify(baselineSpec ?? null)} — the two runs exercise different failure paths ` +
+          'and are not comparable',
+    );
+  }
 
   if (args.pre !== baseline.pre) {
     if (baseline.pre && args.pre === undefined) {
