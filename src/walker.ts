@@ -2,8 +2,8 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright';
 import type {
-  Action, ElementDescriptor, LoadHealth, Selector, SkippedElement, UIEdge, UIGraph, UINode,
-  WalkConfig,
+  AccountingGap, Action, ElementDescriptor, LoadHealth, Selector, SkippedElement, UIEdge, UIGraph,
+  UINode, WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
 import { CLICKGRAPH_VERSION } from './version.js';
@@ -329,9 +329,28 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   const edges: UIEdge[] = [];
   let load: LoadHealth = { consoleErrors: [], httpErrors: [], interactiveFound: 0 };
   const skipped: SkippedElement[] = [];
-  let unwalked = 0;
   let limitHit: string | null = null;
   let actionsUsed = 0;
+
+  /**
+   * The two corrections the coverage invariant needs, per node.
+   *
+   * `interactiveCount` is frozen at discovery, so on its own it is neither an
+   * upper nor a lower bound on what the walk had to do. A self-loop can reveal
+   * controls the frozen list never held (issue #8), which add to the work; and
+   * under `--fill-forms` a field is exercised by its form's submit rather than
+   * by an edge of its own, which removes work without leaving a trace. Both are
+   * counted here so the balance at the end of the walk can be exact instead of
+   * loosened until it passes (issue #19).
+   */
+  const tally = new Map<string, { appeared: number; viaFormSubmit: number }>();
+  const tallyFor = (nodeId: string) => {
+    let entry = tally.get(nodeId);
+    if (!entry) tally.set(nodeId, (entry = { appeared: 0, viaFormSubmit: 0 }));
+    return entry;
+  };
+  /** States found after maxStates was full, so each is reported once, not once per edge. */
+  const unrecorded = new Set<string>();
 
   const browser: Browser = await chromium.launch();
   if (config.storageState && !existsSync(config.storageState)) {
@@ -423,6 +442,15 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     const frontier: PageSnapshot[] = [entry];
     const queuedPaths = new Map<string, Action[]>([[entry.nodeId, []]]);
     const expanded = new Set<string>();
+    /**
+     * Every recorded state's snapshot, kept so a state the walk never expanded
+     * can still name its own controls. A node carries only `interactiveCount`,
+     * which is a number and not a list — and a number is precisely what cannot
+     * be turned into per-control reasons after the browser has closed.
+     */
+    const discovered = new Map<string, PageSnapshot>([[entry.nodeId, entry]]);
+    /** States held out of the frontier on purpose, and why. */
+    const unqueued = new Map<string, string>();
 
     while (frontier.length > 0) {
       const state = frontier.shift()!;
@@ -463,11 +491,29 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         state.elements.map((el) => `${el.selector.strategy}|${el.selector.value}`),
       );
 
+      /**
+       * Fields left for their form's submit to exercise, and the forms that
+       * actually got submitted.
+       *
+       * The two cannot be compared as the loop runs: a field can come before or
+       * after its own submit in the work list, and the submit may yet be turned
+       * away by native validation or by a field nothing can be typed into. So
+       * the fields are set aside here and settled once the state is finished —
+       * either the submit ran and they were typed into, or nobody ever touched
+       * them and that is a gap with a name (issue #19).
+       */
+      const forSubmit: { el: ElementDescriptor; formId: string }[] = [];
+      const submittedForms = new Set<string>();
+
       for (let i = 0; i < pending.length; i++) {
         const { el, appearedIn } = pending[i]!;
         if (actionsUsed >= config.maxActions) {
           limitHit = limitHit ?? `maxActions (${config.maxActions})`;
-          unwalked++;
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label, reason: 'budget',
+            detail: `the maxActions budget (${config.maxActions}) was spent before the walk ` +
+              'reached this control',
+          });
           continue;
         }
 
@@ -492,8 +538,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         if (isTextEntry(el)) {
           // Not skipped — this field gets a value when its form is submitted
           // below, which is the only context in which typing into it proves
-          // anything.
-          if (config.fillForms && el.formId && submittable.has(el.formId)) continue;
+          // anything. Set aside rather than dropped: "its submit will handle it"
+          // is a promise, and the reconciliation below checks it was kept.
+          if (config.fillForms && el.formId && submittable.has(el.formId)) {
+            forSubmit.push({ el, formId: el.formId });
+            continue;
+          }
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
             reason: 'needs-input',
@@ -527,7 +577,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         if (!appearedIn &&
             (!atSnapshot || atSnapshot.fingerprint.structure !== state.fingerprint.structure)) {
           if (!(await gotoPath(path))) {
-            unwalked++;
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label,
+              reason: 'not-reached',
+              detail: 'the walk could not replay its way back to this state, so the control ' +
+                'was never tried',
+            });
             atSnapshot = null;
             continue;
           }
@@ -641,7 +696,12 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // Both gates above guarantee a snapshot; the narrowing is for the
         // compiler, and skipping is the honest fallback if that ever breaks.
         if (atSnapshot === null) {
-          unwalked++;
+          skipped.push({
+            nodeId: state.nodeId, label: el.selector.label,
+            reason: 'not-reached',
+            detail: 'the walk lost track of which screen the browser was on before this ' +
+              'control could be tried',
+          });
           continue;
         }
         const before = atSnapshot;
@@ -675,7 +735,9 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         actionsUsed++;
 
         if (clickFailed) {
-          unwalked++;
+          // No `unwalked++` beside the skip: the control is accounted for once,
+          // by the entry below. Counting it in both places is how a tally and a
+          // graph drift apart (issue #19).
           atSnapshot = null;
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label,
@@ -733,8 +795,15 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
               i + 1, 0,
               ...fresh.map((n) => ({ el: n, appearedIn: after.fingerprint.structure })),
             );
+            // Work this node owes that its frozen `interactiveCount` never knew
+            // about, so the balance at the end of the walk expects it.
+            tallyFor(state.nodeId).appeared += fresh.length;
           }
         }
+
+        // The submit ran, so whatever was set aside for it above was typed into
+        // after all.
+        if (el.formSubmit && el.formId) submittedForms.add(el.formId);
 
         edges.push({
           from: state.nodeId,
@@ -750,6 +819,23 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         if (reachedNew && !nodes[after.nodeId]) {
           if (Object.keys(nodes).length >= config.maxStates) {
             limitHit = limitHit ?? `maxStates (${config.maxStates})`;
+            // The screen was reached and then not written down, so without this
+            // nothing in the graph would ever mention it or its controls — the
+            // worst version of the undercount, because the denominator loses a
+            // whole state rather than a few controls (issue #19). The entries
+            // name a node that is deliberately absent from `nodes`; that is the
+            // record of a screen the budget refused, and it is once per state
+            // rather than once per edge that lands on it.
+            if (!unrecorded.has(after.nodeId)) {
+              unrecorded.add(after.nodeId);
+              for (const missed of after.elements) {
+                skipped.push({
+                  nodeId: after.nodeId, label: missed.selector.label, reason: 'budget',
+                  detail: `${after.fingerprint.route} was reached after the maxStates budget ` +
+                    `(${config.maxStates}) was full, so the state itself was never recorded`,
+                });
+              }
+            }
             continue;
           }
           const newPath = [...path, action];
@@ -761,15 +847,64 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             path: newPath,
             interactiveCount: after.elements.length,
           };
+          discovered.set(after.nodeId, after);
           log(`  → discovered ${after.fingerprint.route}`);
           if (newPath.length < config.maxDepth) {
             queuedPaths.set(after.nodeId, newPath);
             frontier.push(after);
           } else {
             limitHit = limitHit ?? `maxDepth (${config.maxDepth})`;
-            unwalked += after.elements.length;
+            // Was `unwalked += after.elements.length`: a bulk number and not one
+            // word about which controls it stood for. The state is recorded with
+            // an `interactiveCount` and no out-edges and no skips, which is the
+            // shape issue #19 opens on — a whole screen that reads as covered.
+            // The sweep after the loop gives each of them a reason.
+            unqueued.set(
+              after.nodeId,
+              `${after.fingerprint.route} is ${newPath.length} click(s) from the entry page ` +
+                `and maxDepth is ${config.maxDepth}, so the state was never expanded`,
+            );
           }
         }
+      }
+
+      // Settle up with the fields that were left to their form's submit. The
+      // ones whose submit ran were typed into, and the edge it produced is the
+      // proof — they are covered without an edge of their own, which the
+      // balance below is told about. The rest belong to a form that was turned
+      // away (native validation, a field nothing could be typed into, a submit
+      // that never became clickable): nobody typed into them, and before this
+      // they were the one deliberate silence left in the accounting.
+      for (const { el, formId } of forSubmit) {
+        if (submittedForms.has(formId)) {
+          tallyFor(state.nodeId).viaFormSubmit++;
+          continue;
+        }
+        skipped.push({
+          nodeId: state.nodeId, label: el.selector.label,
+          reason: 'needs-input',
+          detail: 'its form was never submitted, so nothing was ever typed into this field',
+        });
+      }
+    }
+
+    // Every state that was found and never expanded, control by control.
+    //
+    // Doing this as a sweep over what was discovered — rather than at each site
+    // that declines to expand a state — is deliberate: it holds for a reason
+    // nobody has thought of yet. A state left on the frontier by a future early
+    // exit gets `frontier-exhausted` and stays visible, instead of going quiet
+    // the way the maxDepth cut above used to.
+    for (const [nodeId, snapshot] of discovered) {
+      if (expanded.has(nodeId)) continue;
+      const why = unqueued.get(nodeId);
+      for (const missed of snapshot.elements) {
+        skipped.push({
+          nodeId, label: missed.selector.label,
+          reason: why ? 'budget' : 'frontier-exhausted',
+          detail: why ?? 'the state was discovered and queued, and the walk ended before it ' +
+            'was expanded',
+        });
       }
     }
   } finally {
@@ -777,6 +912,77 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   }
 
   markAlreadyApplied(edges);
+
+  /**
+   * Balance every enumerated control against what the walk did with it.
+   *
+   * The invariant, per node:
+   *
+   *   interactiveCount + appeared  ==  out-edges + viaFormSubmit + skipped
+   *
+   * The left side is everything the node had to offer: the controls it was
+   * enumerated with, plus the ones a self-loop revealed afterwards, which are
+   * walked but were never in the frozen count (issue #8). The right side is
+   * everything that was done about them. `viaFormSubmit` is on the right rather
+   * than subtracted from the left because a filled field really was exercised —
+   * it just has its form's edge to show for it instead of one of its own.
+   *
+   * Naively equating out-edges + skipped to interactiveCount does not balance
+   * for either of those reasons, and the temptation is to relax it until it
+   * passes. Naming the two corrections keeps it exact, which is the only form
+   * worth asserting: an invariant that has been loosened until it holds proves
+   * nothing about the thing it was written to catch.
+   *
+   * A violation does NOT throw. The walk has already run — a real graph, a real
+   * browser session, minutes of real clicking — and the mismatch is in
+   * clickgraph's own bookkeeping, not in the app. Destroying the evidence to
+   * punish the accountant leaves a user with nothing to report and nothing to
+   * debug with. It is recorded in the graph and shouted in the report instead,
+   * which is the same rule the rest of this project runs on: a gap that is
+   * stated is worth more than a number that looks clean.
+   */
+  const outEdges = new Map<string, number>();
+  for (const edge of edges) outEdges.set(edge.from, (outEdges.get(edge.from) ?? 0) + 1);
+  const skipsPerNode = new Map<string, number>();
+  for (const entry of skipped) {
+    skipsPerNode.set(entry.nodeId, (skipsPerNode.get(entry.nodeId) ?? 0) + 1);
+  }
+
+  const accountingGaps: AccountingGap[] = [];
+  let unwalked = 0;
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    const { appeared, viaFormSubmit } = tally.get(nodeId) ?? { appeared: 0, viaFormSubmit: 0 };
+    const walked = outEdges.get(nodeId) ?? 0;
+    const skips = skipsPerNode.get(nodeId) ?? 0;
+    const offered = node.interactiveCount + appeared;
+    // Discovered and not exercised — which is what edgesUnwalked has always
+    // claimed to be, now taken from the graph instead of a running total that
+    // could disagree with it.
+    unwalked += offered - walked - viaFormSubmit;
+    const gap = offered - walked - viaFormSubmit - skips;
+    if (gap !== 0) {
+      accountingGaps.push({
+        nodeId,
+        route: node.fingerprint.route,
+        interactiveCount: node.interactiveCount,
+        walked, skipped: skips, appeared, viaFormSubmit,
+        detail: `${node.fingerprint.route}: ${offered} control(s) offered, ` +
+          `${walked} walked + ${viaFormSubmit} filled by a form + ${skips} skipped — ` +
+          `${gap > 0 ? `${gap} unexplained` : `${-gap} counted twice`}`,
+      });
+    }
+  }
+  // States the maxStates budget refused to record have no node to balance
+  // against, and their controls are unwalked by definition.
+  for (const entry of skipped) if (!nodes[entry.nodeId]) unwalked++;
+
+  if (accountingGaps.length > 0) {
+    log(
+      `  coverage accounting does not balance on ${accountingGaps.length} state(s) — ` +
+        'this is a clickgraph bug, and the coverage numbers below are unreliable',
+    );
+    for (const gap of accountingGaps) log(`    ${gap.detail}`);
+  }
 
   const expectedRoutes = config.expectedRoutes ?? [];
   const reachedRoutes = new Set(Object.values(nodes).map((node) => node.fingerprint.route));
@@ -796,6 +1002,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       edgesWalked: edges.length,
       edgesUnwalked: unwalked,
       skipped,
+      ...(accountingGaps.length > 0 ? { accountingGaps } : {}),
       limitHit,
       expectedRoutes,
       unreachedRoutes,
