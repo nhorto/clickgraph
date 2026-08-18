@@ -163,6 +163,12 @@ controls nobody proved anything about. Never describe a run as verifying the
 whole UI. If coverage matters to the claim you are about to make, state the
 numbers.
 
+`coverage.unwalked` counts the same controls `coverage.skipped` explains, so the
+two agree: every control the walk did not exercise carries a reason. When
+`coverage.accountingGaps` is not empty they have stopped agreeing, which is a
+bug in clickgraph rather than in the app — the coverage figures from that run
+are unreliable and should not be quoted at all.
+
 The same rule applies to `coverage.unreachedRoutes`: each one is a declared
 screen the walk never found. Fix the fixture or path into it before calling the
 run complete; a clean diff cannot erase an inherited route gap.

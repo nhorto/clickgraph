@@ -153,20 +153,87 @@ export interface UIEdge {
   outcome: Outcome;
 }
 
-/** A control that was found but deliberately not clicked. */
+/**
+ * A control that was found and not exercised, and why.
+ *
+ * Not only the ones we refuse on purpose. A control the walk ran out of budget
+ * for, or could not get back to, belongs here too: the alternative — which is
+ * what the walker used to do — is a control that exists in `interactiveCount`
+ * and appears nowhere else in the graph, so coverage quietly shrinks its own
+ * denominator and a screen nobody touched reads as covered (issue #19).
+ */
 export interface SkippedElement {
   nodeId: string;
   label: string;
-  reason: 'dangerous' | 'external' | 'disabled' | 'budget' | 'needs-input' | 'unreachable';
+  reason:
+    | 'dangerous'
+    | 'external'
+    | 'disabled'
+    /** A configured limit — maxActions, maxStates, maxDepth — ran out first. */
+    | 'budget'
+    | 'needs-input'
+    | 'unreachable'
+    /** The walk could not get the browser back to the state holding this control. */
+    | 'not-reached'
+    /** The state was discovered and queued, and the walk ended before expanding it. */
+    | 'frontier-exhausted';
   detail?: string;
+}
+
+/**
+ * A node whose controls do not add up, and the numbers that prove it.
+ *
+ * Every control a node enumerated should end the walk as exactly one of: an
+ * out-edge, a field a form submission consumed, or a `skipped[]` entry. When
+ * that fails to balance the bug is in clickgraph's own bookkeeping, not in the
+ * app — but the coverage figures beside it are then unreliable, and a number a
+ * reader would trust is worse than an obviously bad one, so it is reported
+ * rather than swallowed.
+ */
+export interface AccountingGap {
+  nodeId: string;
+  route: string;
+  /** Controls enumerated when the node was discovered; frozen from then on. */
+  interactiveCount: number;
+  /** Out-edges of this node. */
+  walked: number;
+  /** `skipped[]` entries naming this node. */
+  skipped: number;
+  /**
+   * Controls a self-loop revealed after the node's list was frozen (issue #8).
+   * They are walked but were never in `interactiveCount`, so they are added to
+   * what the node had to offer rather than subtracted from what was done.
+   */
+  appeared: number;
+  /**
+   * Fields exercised by their form's submit rather than by a click of their
+   * own, under `--fill-forms`. Covered without an edge to show for it.
+   */
+  viaFormSubmit: number;
+  /** The imbalance in plain words, for a reader who will not do the algebra. */
+  detail: string;
 }
 
 export interface Coverage {
   statesFound: number;
   edgesWalked: number;
-  /** Controls discovered but never exercised. Never counted as working. */
+  /**
+   * Controls discovered but never exercised. Never counted as working.
+   *
+   * Derived from the graph at the end of the walk rather than tallied as it
+   * runs, so the number cannot drift away from the nodes and edges a reader can
+   * count for themselves (issue #19). Deliberate skips are included: a control
+   * refused as dangerous was discovered and was not exercised, which is exactly
+   * what this counts.
+   */
   edgesUnwalked: number;
   skipped: SkippedElement[];
+  /**
+   * Nodes where `out-edges + form-filled + skipped` did not match the controls
+   * the node offered. Absent on a healthy walk, which is every walk unless
+   * clickgraph has a bookkeeping bug.
+   */
+  accountingGaps?: AccountingGap[];
   /** Which budget stopped the walk, if any. null means the walk ran to completion. */
   limitHit: string | null;
   /** Routes the caller declared should be reachable in this walk. */

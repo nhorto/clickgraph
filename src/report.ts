@@ -144,6 +144,27 @@ export function reportWalk(graph: UIGraph): string {
     }
     for (const [reason, count] of byReason) {
       lines.push(`  ${count} skipped (${reason})`);
+      // The three reasons that mean "the walk ran out" rather than "the walker
+      // declined" are the ones a reader can act on by re-running with a bigger
+      // budget — but only if they are told which budget, and "N skipped
+      // (budget)" on its own does not (issue #19).
+      if (reason === 'budget' || reason === 'not-reached' || reason === 'frontier-exhausted') {
+        const example = coverage.skipped.find((s) => s.reason === reason && s.detail);
+        if (example?.detail) lines.push(c.dim(`      e.g. ${example.detail}`));
+      }
+    }
+  }
+  // A coverage figure that does not add up is worse than a bad one, because it
+  // is a figure a reader would trust. Said where the coverage claim is made.
+  const accountingGaps = coverage.accountingGaps ?? [];
+  if (accountingGaps.length > 0) {
+    lines.push(
+      c.red(`  ${accountingGaps.length} state(s) whose controls do not add up — this is a ` +
+        'clickgraph bug, and the counts above are unreliable:'),
+    );
+    for (const gap of accountingGaps.slice(0, 5)) lines.push(c.red(`    ${gap.detail}`));
+    if (accountingGaps.length > 5) {
+      lines.push(c.dim(`    … and ${accountingGaps.length - 5} more`));
     }
   }
   if (coverage.limitHit) {

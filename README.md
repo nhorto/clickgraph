@@ -30,6 +30,7 @@ Findings
              on /settings — 500 POST http://localhost:4173/api/save
 
 Not covered
+  3 control(s) discovered but not walked
   1 skipped (disabled)
   1 skipped (dangerous)
   1 skipped (external)

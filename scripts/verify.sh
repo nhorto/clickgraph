@@ -601,6 +601,89 @@ node -e '
 ' /tmp/clickgraph-kiosk-graph.json 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "two ways onto one screen still reach a single node"
 
+echo "M: every enumerated control is accounted for"
+# A tight --max-depth is the cheapest way to leave controls unexpanded: six
+# whole screens are discovered and not one of their controls is walked. Before
+# issue #19 those controls appeared nowhere in the graph — not an edge, not a
+# skip — so coverage quietly shrank its own denominator and a run that never
+# touched a screen still read as essentially complete.
+#
+# The graphs here are written inside the repo rather than under /tmp because
+# these checks read back the exact file the walk just wrote and do arithmetic
+# on it; a path the shell and node both resolve the same way is the point.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL" --quiet --max-depth 1 --out .uigraph/accounting-depth.json \
+  >/tmp/clickgraph-accounting-depth.txt 2>&1
+check "$?" "0" "a walk cut short by a depth budget still succeeds"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const { coverage, nodes, edges } = require("./.uigraph/accounting-depth.json");
+
+  // The invariant, as asserted by the walk itself — it is the only party that
+  // can see the two correction terms: controls a self-loop revealed after a
+  // node froze its list (issue #8), and fields a form submit consumed instead
+  // of an edge. An absent gap list is the walk saying its books balanced.
+  if (coverage.accountingGaps)
+    fail(`the walk found its own books unbalanced: ${JSON.stringify(coverage.accountingGaps)}`);
+
+  // The same claim in the form the artifact can be checked on by anyone:
+  // every control that produced no edge carries a reason, so the summary
+  // number and the list of reasons cannot drift apart.
+  if (coverage.edgesUnwalked !== coverage.skipped.length)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} != ${coverage.skipped.length} skipped entries`);
+
+  // Neither correction can apply to a walk this shallow, so the bare per-node
+  // form has to hold exactly. This is the arithmetic issue #19 ran by hand.
+  for (const [id, node] of Object.entries(nodes)) {
+    const walked = edges.filter((e) => e.from === id).length;
+    const skips = coverage.skipped.filter((s) => s.nodeId === id).length;
+    if (walked + skips !== node.interactiveCount)
+      fail(`${node.fingerprint.route}: ${walked} walked + ${skips} skipped != ${node.interactiveCount} enumerated`);
+  }
+
+  // And the regression itself. The states the depth budget refused to expand
+  // are the ones that used to be silent, so every control on them must now
+  // name a reason and say which budget stopped it.
+  const unexpanded = Object.entries(nodes).filter(([id]) => !edges.some((e) => e.from === id));
+  if (unexpanded.length < 5) fail(`expected several unexpanded states, got ${unexpanded.length}`);
+  for (const [id, node] of unexpanded) {
+    const skips = coverage.skipped.filter((s) => s.nodeId === id);
+    if (skips.length !== node.interactiveCount)
+      fail(`${node.fingerprint.route}: ${node.interactiveCount} control(s), ${skips.length} explained`);
+    if (!skips.every((s) => s.reason === "budget" && /maxDepth/.test(s.detail ?? "")))
+      fail(`${node.fingerprint.route}: a skip does not say which budget stopped it`);
+  }
+  if (coverage.edgesUnwalked < 40)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} is too small to be counting whole screens`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "controls on a state a budget never expanded each carry a reason"
+grep -q 'skipped (budget)' /tmp/clickgraph-accounting-depth.txt
+check "$?" "0" "the human report groups the unexpanded controls under their budget"
+
+# The sharper half of issue #19. maxStates discards the state itself, so its
+# controls had no node to be counted against and edgesUnwalked stayed 0: a walk
+# that never recorded five screens reported as fully covered.
+node dist/cli.js walk "$URL" --quiet --max-states 3 --out .uigraph/accounting-states.json \
+  >/dev/null 2>&1
+check "$?" "0" "a walk cut short by a state budget still succeeds"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const { coverage, nodes } = require("./.uigraph/accounting-states.json");
+  if (coverage.accountingGaps)
+    fail(`the walk found its own books unbalanced: ${JSON.stringify(coverage.accountingGaps)}`);
+  if (coverage.edgesUnwalked !== coverage.skipped.length)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} != ${coverage.skipped.length} skipped entries`);
+  // Controls on screens the budget refused to record name a node deliberately
+  // absent from `nodes` — the only trace a graph can carry of a screen it was
+  // told not to keep, and better than the nothing that was there before.
+  const unrecorded = coverage.skipped.filter((s) => !nodes[s.nodeId]);
+  if (unrecorded.length === 0) fail("screens dropped by maxStates left no trace at all");
+  if (!unrecorded.every((s) => s.reason === "budget" && /maxStates/.test(s.detail ?? "")))
+    fail("a control on an unrecorded screen does not say which budget lost it");
+  if (coverage.edgesUnwalked < unrecorded.length)
+    fail(`edgesUnwalked ${coverage.edgesUnwalked} leaves out ${unrecorded.length} control(s) on screens never recorded`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "screens dropped by the state budget still name their controls"
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]
