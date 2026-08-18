@@ -1178,6 +1178,63 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "still names the in-browser gate as a login screen"
 
+echo "T: a form the app never wrote down (issue #24)"
+# Most apps do not use <form>. The React shape is loose inputs and a button
+# bound to a handler, and nothing in that DOM says which fields belong to which
+# button — so --fill-forms could reach none of it, and every one of those
+# buttons was clicked against empty fields and reported dead. Behind CLUSTER=1
+# so the other scenarios keep their contract.
+start_fixture PORT="$PORT" CLUSTER=1
+node dist/cli.js walk "$URL/team" --quiet --json --max-depth 1 \
+  --out /tmp/clickgraph-cluster-off.json >/tmp/clickgraph-cluster-off-out.json 2>/dev/null
+check "$?" "0" "a screen with no form on it still walks cleanly"
+node -e '
+  const v = require("/tmp/clickgraph-cluster-off-out.json");
+  const g = require("/tmp/clickgraph-cluster-off.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  // The false positive this exists to remove. Unfilled, the handler declines in
+  // silence, which from outside is exactly what a button wired to nothing does.
+  if (v.findings.some((f) => /Send invite/.test(f.control)))
+    fail("a working button was called dead for declining an empty group");
+  const at = g.coverage.skipped.filter((s) => s.nodeId.startsWith("/team"));
+  const submit = at.find((s) => /Send invite/.test(s.label));
+  if (!submit) fail("the inferred submit was neither walked nor reported");
+  if (!/not in a form/.test(submit.detail ?? ""))
+    fail(`the skip does not say why it could not tell: ${JSON.stringify(submit)}`);
+  // The half that refuses. One field with two buttons beside it cannot be
+  // grouped without guessing, and guessing means typing into fields that do not
+  // belong together — so it stays skipped exactly as it was before.
+  if (!at.some((s) => s.label === `textbox "Note"`))
+    fail("the ungroupable field was not left skipped");
+  // Refusing to group them must not cost the buttons their walk.
+  if (v.findings.some((f) => /Save note|Clear/.test(f.control)))
+    fail("a button beside an ungrouped field was reported as dead");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "infers no group where guessing would be wrong, and calls nothing dead for it"
+
+node dist/cli.js walk "$URL/team" --quiet --json --fill-forms --max-depth 1 \
+  --out /tmp/clickgraph-cluster-on.json >/tmp/clickgraph-cluster-on-out.json 2>/dev/null
+check "$?" "0" "filling a group the app never declared still succeeds"
+node -e '
+  const v = require("/tmp/clickgraph-cluster-on-out.json");
+  const g = require("/tmp/clickgraph-cluster-on.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  // A rule that only ever refuses cannot be told from a rule that does nothing.
+  // This is the half that proves the grouping was actually made.
+  const sent = g.edges.find((e) => e.action.kind === "fill" && /Send invite/.test(e.action.selector.label));
+  if (!sent) fail("the inferred group was never filled");
+  if (sent.outcome.kind === "no-effect") fail("the button did nothing once its group was filled");
+  const typed = sent.action.fill.map((f) => f.label).sort();
+  if (typed.length !== 2) fail(`the group is the wrong size: ${JSON.stringify(typed)}`);
+  // The adjacent card must not be dragged in. Typing into fields that belong to
+  // a different button is the failure this whole inference is bounded to avoid.
+  if (sent.action.fill.some((f) => /Note/.test(f.label)))
+    fail(`a field from the neighbouring card was typed into: ${JSON.stringify(typed)}`);
+  if (v.findings.some((f) => /Send invite|Save note|Clear/.test(f.control)))
+    fail("a working control on the cluster screen was reported as dead");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "groups exactly the fields that belong to it, and proves the button works"
+
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"

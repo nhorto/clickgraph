@@ -351,6 +351,31 @@ async function formWillSubmit(page: Page, selector: Selector): Promise<boolean> 
   }
 }
 
+/**
+ * The same question, for a group the app never declared as a form.
+ *
+ * There is no form here, so there is nothing to ask `checkValidity` — and the
+ * gap it leaves is the same false positive it was written to close. A handler
+ * that quietly declines an empty cluster and a button wired to nothing are
+ * identical from the outside: both change no DOM. So the fields are read
+ * instead, and a cluster with an empty one is reported as needing input rather
+ * than guessed at. Unreadable counts as filled, so this can only hold back a
+ * click, never invent a reason to make one.
+ */
+async function clusterIsFilled(page: Page, fields: ElementDescriptor[]): Promise<boolean> {
+  for (const field of fields) {
+    try {
+      const at = await locate(page, field);
+      if (!at) continue;
+      const value = await resolve(page, at).inputValue({ timeout: ACTION_TIMEOUT });
+      if (value.trim() === '') return false;
+    } catch {
+      continue;
+    }
+  }
+  return true;
+}
+
 function isDangerous(el: ElementDescriptor): boolean {
   const text = `${el.name} ${el.selector.label}`;
   return DANGEROUS.some((re) => re.test(text));
@@ -979,6 +1004,29 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
               : 'the form is not filled in, so the browser refuses to submit it',
           });
           continue;
+        }
+
+        // And the same refusal where the browser has no opinion to offer,
+        // because the app grouped its fields with layout instead of a <form>.
+        // `formWillSubmit` answers true for anything with no form above it, so
+        // without this the cluster's button is clicked against empty fields —
+        // which is the check above skipped for every app that does not use
+        // forms, which is most of them (issue #24).
+        if (el.formSubmit && el.formKind === 'cluster') {
+          const empty = state.elements.filter(
+            (f) => f !== el && f.formId === el.formId && !f.disabled && isTextEntry(f),
+          );
+          if (empty.length > 0 && !(await clusterIsFilled(page, empty))) {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label,
+              reason: 'needs-input',
+              detail: filled.length > 0
+                ? `still empty after filling ${filled.length} field(s)`
+                : `${empty.length} field(s) beside it are empty, and these are not in a ` +
+                  'form, so nothing will say whether a click was declined or ignored',
+            });
+            continue;
+          }
         }
 
         // Both gates above guarantee a snapshot; the narrowing is for the
