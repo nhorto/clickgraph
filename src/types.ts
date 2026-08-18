@@ -197,7 +197,10 @@ export interface WalkConfig {
    */
   pre?: string;
   /**
-   * Path to a Playwright storage-state file, so the walk starts logged in.
+   * Path to a session file, so the walk starts logged in: a Playwright storage
+   * state, plus the sessionStorage that storage state cannot hold and the walk
+   * replays instead (see session.ts).
+   *
    * Only the path is recorded in the graph — the file holds session cookies and
    * must never be copied into an artifact that gets committed.
    */

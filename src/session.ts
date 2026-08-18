@@ -1,5 +1,5 @@
 /**
- * The third store a saved sign-in can live in.
+ * The session file: the third store a sign-in can live in, and how it is kept.
  *
  * Playwright's storage state carries cookies and localStorage and nothing else:
  * `context.storageState()` has no sessionStorage anywhere in its shape. An app
@@ -9,11 +9,32 @@
  * login screen. Worse, `login` reported success either way, so the tool told
  * the user to do a thing that could not work and then said nothing (issue #27).
  *
- * This module is the part of a session that Playwright does not model: reading
- * sessionStorage out of a signed-in context, and judging when its absence from
- * the storage state is the whole story rather than a detail.
+ * Playwright cannot serialize sessionStorage, but a walk can replay it, so the
+ * file is its storage state plus one key of ours:
+ *
+ *   {
+ *     "cookies":        [ { "name": …, "domain": … } ],                 // Playwright's
+ *     "origins":        [ { "origin": …, "localStorage": [ … ] } ],     // Playwright's
+ *     "sessionStorage": [ { "origin": …, "items": [ … ] } ]             // ours
+ *   }
+ *
+ * One file rather than a sidecar, because the two halves are one secret with
+ * one lifetime and `--storage-state` names one path: a sidecar can be copied,
+ * moved or deleted apart from the file it belongs to, and a session half
+ * restored is a login screen with no explanation attached. The key path names
+ * the store every entry came from, so nobody reading the file later has to
+ * infer which of the three a value belongs to.
+ *
+ * The cost is that the file is no longer something Playwright reads for us.
+ * `newContext({ storageState })` is handed the cookies-and-origins half as an
+ * object, after this module has read the file and split it. Passing the path
+ * straight through would have made our own key Playwright's business to
+ * validate — it tolerates unknown keys today, and a version that stopped would
+ * fail every walk rather than ignore one field.
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { BrowserContext } from 'playwright';
 
 /** One key/value pair, in the shape Playwright already uses for localStorage. */
@@ -30,6 +51,126 @@ export interface SessionStorageOrigin {
 
 /** Exactly what `context.storageState()` returns — cookies and localStorage. */
 export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>;
+
+/** A session file, split into the half Playwright understands and the half it does not. */
+export interface SavedSession {
+  storageState: StorageState;
+  sessionStorage: SessionStorageOrigin[];
+}
+
+/**
+ * Read a session file, keeping the two halves apart.
+ *
+ * Anything written before this change has no `sessionStorage` key and reads as
+ * an empty list, which is exactly what it held — so an existing session file
+ * keeps working, and so does one hand-written as a plain Playwright storage
+ * state. A `sessionStorage` key that is present but malformed throws instead:
+ * it means something meant to carry a session, and dropping it quietly would
+ * reproduce the silence this whole issue is about.
+ */
+export function readSessionFile(path: string): SavedSession {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    throw new Error(
+      `session file ${path} could not be read: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`session file ${path} is not a JSON object`);
+  }
+  const file = parsed as Record<string, unknown>;
+  return {
+    storageState: {
+      cookies: (file.cookies as StorageState['cookies']) ?? [],
+      origins: (file.origins as StorageState['origins']) ?? [],
+    },
+    sessionStorage: parseSessionStorage(file.sessionStorage, path),
+  };
+}
+
+function parseSessionStorage(value: unknown, path: string): SessionStorageOrigin[] {
+  if (value === undefined) return [];
+  const malformed = () =>
+    new Error(
+      `session file ${path} has a "sessionStorage" key that is not a list of ` +
+      '{ origin, items: [{ name, value }] } — re-run clickgraph login to rewrite it',
+    );
+  if (!Array.isArray(value)) throw malformed();
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') throw malformed();
+    const { origin, items } = entry as { origin?: unknown; items?: unknown };
+    if (typeof origin !== 'string' || !Array.isArray(items)) throw malformed();
+    return {
+      origin,
+      items: items.map((item) => {
+        if (!item || typeof item !== 'object') throw malformed();
+        const { name, value: itemValue } = item as { name?: unknown; value?: unknown };
+        if (typeof name !== 'string' || typeof itemValue !== 'string') throw malformed();
+        return { name, value: itemValue };
+      }),
+    };
+  });
+}
+
+/**
+ * Write both halves as one file.
+ *
+ * Written here rather than by `context.storageState({ path })` for the single
+ * reason that Playwright would write only its own half, and the sessionStorage
+ * appended afterwards would be a second write that could fail on its own.
+ */
+export function writeSessionFile(
+  path: string,
+  storageState: StorageState,
+  sessionStorage: SessionStorageOrigin[],
+): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const file = {
+    ...storageState,
+    ...(sessionStorage.length > 0 ? { sessionStorage } : {}),
+  };
+  writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`);
+}
+
+/**
+ * Put a saved sessionStorage back before the app can look for it.
+ *
+ * `addInitScript` runs in every document before any of its scripts do, which is
+ * the only moment this works: an app reads its session on load, so seeding it
+ * after the first navigation means the first screen is the login screen and the
+ * walk has already recorded it. Installed the same way, and for the same
+ * reason, as the chrome-effect shims the walker puts in beside it.
+ */
+export async function seedSessionStorage(
+  context: BrowserContext,
+  origins: SessionStorageOrigin[],
+): Promise<void> {
+  await context.addInitScript((saved: SessionStorageOrigin[]) => {
+    try {
+      // sessionStorage is per origin, so a value saved for one host must never
+      // appear on another. Frames with an opaque origin match nothing and are
+      // left alone.
+      const mine = saved.find((entry) => entry.origin === window.location.origin);
+      if (!mine) return;
+      for (const item of mine.items) {
+        // Seed, not enforce. sessionStorage survives navigation within the tab,
+        // so after the first page the app owns these keys: re-imposing the
+        // captured value on every navigation would overwrite a token the app
+        // had refreshed. The accepted cost is that a key the app deletes comes
+        // back on the next navigation — which needs a walk that clicked sign
+        // out, and sign out is skipped as dangerous unless asked for.
+        if (window.sessionStorage.getItem(item.name) === null) {
+          window.sessionStorage.setItem(item.name, item.value);
+        }
+      }
+    } catch {
+      // A sandboxed frame throws on any storage access. Nothing about that
+      // stops the rest of the walk.
+    }
+  }, origins);
+}
 
 /**
  * Read sessionStorage out of every page the signed-in context still has open.

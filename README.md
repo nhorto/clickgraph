@@ -118,6 +118,31 @@ npx clickgraph diff http://localhost:5173 --storage-state .uigraph/session.json
 When the session expires the diff says so — "the entry page now looks like a
 login screen" — instead of reporting the entire app as missing.
 
+### Sessions kept per tab
+
+Playwright's storage state holds cookies and localStorage and nothing else, so
+an app that keeps its session in `sessionStorage` — the deliberate choice when a
+session must not outlive the tab — used to save an empty file and walk straight
+back into its own sign-in form, with `login` reporting success either way.
+
+`login` now saves that third store too, in the same file and labelled by the
+store it came from:
+
+```json
+{
+  "cookies":        [ ... ],
+  "origins":        [ { "origin": "...", "localStorage": [ ... ] } ],
+  "sessionStorage": [ { "origin": "...", "items": [ { "name": "...", "value": "..." } ] } ]
+}
+```
+
+A walk replays the `sessionStorage` entries into the browser before its first
+navigation, so the app finds its session where it left it. It is restored only
+for the origin it was captured from, because that is the only place it means
+anything — and if the walk is of a different origin, the walk says so rather
+than reporting a sign-in screen it cannot explain. Session files written before
+this existed have no `sessionStorage` key and keep working unchanged.
+
 ## Forms
 
 Clicking a form's submit button with its fields empty proves nothing: the

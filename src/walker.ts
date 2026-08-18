@@ -14,6 +14,7 @@ import {
 import { normalizeRoute, normalizeText } from './fingerprint.js';
 import { refusesFill, synthesize } from './formfill.js';
 import { faultSpec, installFault, isInjected } from './fault.js';
+import { readSessionFile, seedSessionStorage } from './session.js';
 
 /**
  * A control that leads to state X does nothing when clicked from state X — it
@@ -341,13 +342,46 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         `then saving the session with Playwright's context.storageState({ path })`,
     );
   }
+  // Read and split here rather than handing Playwright the path: the file may
+  // carry a sessionStorage half that Playwright has no way to restore, and
+  // giving it a key it does not know is asking a future version to reject the
+  // whole file (issue #27).
+  let session;
+  try {
+    session = config.storageState ? readSessionFile(config.storageState) : undefined;
+  } catch (err) {
+    // Closed for the same reason the missing-file check above closes it: an
+    // unreadable session file is a usage error, and it should not cost a
+    // browser left running.
+    await browser.close();
+    throw err;
+  }
   const context = await browser.newContext({
     acceptDownloads: false,
-    storageState: config.storageState,
+    storageState: session?.storageState,
   });
   // Before any page exists: the shims must be in place before the first app
   // script runs, or a print on load would go unseen.
   await instrumentChromeEffects(context);
+  // Same window, same reason: an app reads its session as it loads, so a
+  // sessionStorage seeded any later than this arrives after the entry screen
+  // has already been captured as a login form.
+  if (session && session.sessionStorage.length > 0) {
+    await seedSessionStorage(context, session.sessionStorage);
+    const walkOrigin = new URL(baseUrl).origin;
+    const forWalk = session.sessionStorage.find((entry) => entry.origin === walkOrigin);
+    if (forWalk) {
+      log(`replaying ${forWalk.items.length} sessionStorage key(s) saved for ${walkOrigin}`);
+    } else {
+      // Silence here is the original bug wearing a different hat: the file
+      // holds a session, the walk cannot use it, and the only symptom would be
+      // a login screen the report blames on an expired session.
+      log(
+        `saved sessionStorage is for ${session.sessionStorage.map((e) => e.origin).join(', ')}, ` +
+        `but this walk is ${walkOrigin} — sessionStorage is per origin, so none of it applies`,
+      );
+    }
+  }
   // Same reason, and one more: a fault installed after the first navigation
   // would let the entry screen load healthily and then break everything after
   // it, so the walk would compare two different apps to each other.
