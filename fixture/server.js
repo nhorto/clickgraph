@@ -73,6 +73,22 @@ const page = (title, body) => `<!doctype html>
 ${body}
 </body></html>`;
 
+/**
+ * A page with no nav, for the cases that have to be walked on their own.
+ *
+ * The keypad below is about what a snapshot can and cannot see, and it depends
+ * on the exact order its controls are walked in: the mask fills up as the keys
+ * are pressed. Six nav links in front of it would put a navigation and a replay
+ * between every pair of presses, and drag the rest of the app into a walk that
+ * is not about it.
+ */
+const bare = (title, body) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>${title}</title>
+<style>body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }</style>
+</head><body>
+${body}
+</body></html>`;
+
 const routes = {
   '/': page('Home', `
     <h1>Acme Dashboard</h1>
@@ -280,6 +296,62 @@ const routes = {
           ? '<button id="beep" data-testid="beep">Beep</button>' : '';
       });
     </script>`),
+
+  /*
+   * The masked PIN keypad of issue #26: eleven working controls whose entire
+   * effect is a class on something that is not a control.
+   *
+   * The dots are plain divs. A keypress moves one from `pin-dot` to
+   * `pin-dot filled` — no text, no attribute the element list carries, no
+   * rectangle, nothing on body or :root — so every signal the snapshot had came
+   * back byte-identical and all eleven keys were reported dead at once.
+   *
+   * The fifth press wraps back to the first dot rather than ignoring the
+   * keystroke. A keypad that went quiet once the mask was full would make keys
+   * 5 through 0 honestly no-effect, and the check would then be measuring the
+   * fixture instead of the tool.
+   *
+   * "Forgot your PIN?" is wired to nothing, and it is the guard on the whole
+   * fix: a class signal sensitive enough to see a dot fill must still leave
+   * this one dead. Being too sensitive here does not add noise, it deletes the
+   * findings the tool exists to produce.
+   */
+  '/keypad': bare('Enter your PIN', `
+    <h1>Enter your PIN</h1>
+    <div id="mask">
+      <div class="pin-dot"></div><div class="pin-dot"></div>
+      <div class="pin-dot"></div><div class="pin-dot"></div>
+    </div>
+    <div id="pad">
+      <button>1</button><button>2</button><button>3</button>
+      <button>4</button><button>5</button><button>6</button>
+      <button>7</button><button>8</button><button>9</button>
+      <button>0</button><button>Back</button>
+    </div>
+    <p><button id="pin-help">Forgot your PIN?</button></p>
+    <style>
+      #mask { display: flex; gap: .5rem; margin: 1rem 0 }
+      .pin-dot { width: 1rem; height: 1rem; border-radius: 50%; border: 2px solid #333 }
+      .pin-dot.filled { background: #333 }
+      #pad button { width: 3rem; padding: .4rem }
+    </style>
+    <script>
+      const dots = () => Array.from(document.querySelectorAll('.pin-dot'));
+      const filled = () => dots().filter((d) => d.classList.contains('filled'));
+      document.querySelectorAll('#pad button').forEach((key) => {
+        key.addEventListener('click', () => {
+          if (key.textContent === 'Back') {
+            filled().pop()?.classList.remove('filled');
+            return;
+          }
+          const all = dots();
+          if (filled().length === all.length) all.forEach((d) => d.classList.remove('filled'));
+          all[filled().length].classList.add('filled');
+        });
+      });
+      // "Forgot your PIN?" is intentionally wired to nothing at all.
+    </script>`),
+
 };
 
 createServer((req, res) => {

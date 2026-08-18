@@ -539,6 +539,50 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
 
+echo "L: a class flip on an element that is not a control is an effect (#26)"
+# Walked on its own: the keypad fills up as its keys are pressed, so the order
+# they are reached in is part of what is being tested.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/keypad" --quiet --out /tmp/clickgraph-keypad.json \
+  >/tmp/clickgraph-keypad.txt 2>&1
+check "$?" "0" "the keypad walk succeeds"
+# All eleven keys work, and every one of them works by moving a dot between
+# `pin-dot` and `pin-dot filled` — a class on a div. No text, no attribute the
+# element list carries, no rectangle, nothing on body or :root, so every signal
+# the snapshot had came back byte-identical and the whole keypad reported dead
+# at once (issue #26).
+#
+# The graph path is passed as an argument rather than written into the script,
+# so the reading and the writing agree about where /tmp is on every platform
+# this runs on.
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  for (const key of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "Back"]) {
+    const edge = graph.edges.find((e) => e.action.name === key);
+    if (!edge) fail(`key ${key} was never walked`);
+    if (edge.outcome.kind !== "state-changed") fail(`key ${key} came back ${edge.outcome.kind}`);
+    if (!/changed its class/.test(edge.outcome.note ?? ""))
+      fail(`key ${key} does not say what it did: ${edge.outcome.note}`);
+  }
+' /tmp/clickgraph-keypad.json
+check "$?" "0" "every key of the masked PIN keypad is reported as working"
+# The guard, which matters more than the fix it guards. A class signal
+# sensitive enough to see a dot fill must still leave the unwired control on
+# the same screen dead — being too sensitive here does not add noise, it
+# deletes the findings the tool exists to produce.
+grep -q 'NO EFFECT.*"Forgot your PIN?"' /tmp/clickgraph-keypad.txt
+check "$?" "0" "still reports the unwired control beside the keypad as dead"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = graph.edges.find((e) => /Forgot your PIN/.test(e.action.name));
+  if (!dead) fail("the unwired control was never walked");
+  if (dead.outcome.kind !== "no-effect") fail(`the unwired control came back ${dead.outcome.kind}`);
+  if (dead.outcome.benign) fail("the unwired control was excused instead of reported");
+' /tmp/clickgraph-keypad.json
+check "$?" "0" "the unwired keypad control is still a finding, not an excused one"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]

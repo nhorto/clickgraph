@@ -34,6 +34,20 @@ export interface PageSnapshot {
    * look like an effect.
    */
   formStateHash: string;
+  /**
+   * Hash of the class attributes carried by everything that is not itself a
+   * control. Effect detection only, never identity — the same standing as the
+   * three hashes above.
+   *
+   * The other signals are structural, textual and geometric, and a class flip
+   * on a plain element is none of those. A masked PIN entry moves a dot from
+   * `pin-dot` to `pin-dot filled`: no text, no attribute the element list
+   * carries, no rectangle — so all eleven keys of a working keypad came back
+   * as dead controls (issue #26). The family is wider than the keypad: step
+   * indicators, progress bars, an active-tab underline drawn on a div, the
+   * selected highlight on a custom list item.
+   */
+  classHash: string;
 }
 
 /**
@@ -339,7 +353,46 @@ function extractPageData() {
       .map((el: any, i: number) => `c${i}:${el.checked ? 1 : 0}`),
   ].join('|');
 
-  return { title: document.title, headings, elements, text, visual, formState };
+  // Class attributes, for the effects that are neither text, nor structure, nor
+  // geometry. A masked PIN keypad is the sharpest case — the dots are divs, and
+  // a keypress only adds `filled` to one of them (issue #26) — but any state a
+  // page draws by flipping a class on something that is not a control lands
+  // here: a step rail, a progress bar, a tab underline on a div.
+  //
+  // Scope: every element carrying a class, minus the controls themselves. The
+  // narrower scope the issue also offered — the nearest common container of the
+  // visible controls — is both more work and less safe, because it is derived
+  // from where the CONTROLS are while the elements this signal exists to see
+  // are by definition not controls. A mask sitting above a keypad, or a step
+  // rail beside a wizard's buttons, can fall outside the very box drawn to
+  // contain them, and a signal that can silently exclude the thing it is
+  // looking for is worse than none.
+  //
+  // Dropping the controls is what keeps this from crying wolf, and it is the
+  // whole of the noise budget. A click puts the pointer and the focus ring on
+  // its target, and component libraries mirror both into class names —
+  // `is-hovered`, `is-focused`, `focus-visible` — so a sample that included
+  // them would report an effect for every click ever made. That is the
+  // expensive direction: it does not add noise, it deletes findings. Excluding
+  // controls removes that entire family without a blocklist of framework
+  // spellings, and costs only the control that flips a class on ITSELF and on
+  // nothing else, which is a quiet miss and the trade this project always
+  // takes. Animation classes are already covered by the settle window, which
+  // waits for attribute mutations to stop before either snapshot is taken.
+  //
+  // Tokens are sorted so a framework that re-adds the same classes in a
+  // different order does not read as a change. `className` is only a string on
+  // HTML elements — on SVG it is an SVGAnimatedString — so the attribute is
+  // read directly rather than trusted to be one.
+  const controls = new Set(Array.from(document.querySelectorAll(INTERACTIVE)));
+  const classes = Array.from(document.querySelectorAll('[class]'))
+    .filter((el) => !controls.has(el))
+    .map((el) =>
+      (el.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean).sort().join(' '),
+    )
+    .join('|');
+
+  return { title: document.title, headings, elements, text, visual, formState, classes };
 }
 /* c8 ignore stop */
 
@@ -358,6 +411,7 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
     contentHash: createHash('sha256').update(data.text).digest('hex').slice(0, 12),
     visualHash: createHash('sha256').update(data.visual).digest('hex').slice(0, 12),
     formStateHash: createHash('sha256').update(data.formState).digest('hex').slice(0, 12),
+    classHash: createHash('sha256').update(data.classes).digest('hex').slice(0, 12),
   };
 }
 
@@ -575,6 +629,19 @@ export function classifyOutcome(
       ...handled,
       kind: 'state-changed',
       note: 'the view changed visually — no text or control changed',
+    };
+  }
+
+  // An element that is not a control changed its classes: a dot in a PIN mask
+  // filling in, a step marker going active, a highlight moving between custom
+  // list items. The user can see it and no other signal can, so before this the
+  // whole eleven-key keypad reported dead at once (issue #26).
+  if (before.classHash !== after.classHash) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: 'an element changed its class — a state the page draws in CSS, not in text',
     };
   }
 
