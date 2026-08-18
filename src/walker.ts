@@ -387,11 +387,16 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   const unrecorded = new Set<string>();
 
   const browser: Browser = await chromium.launch();
+  // Names `clickgraph login` rather than Playwright's own storageState call,
+  // which is what this used to suggest. A hand-rolled storage state is still
+  // accepted and still works, but it is the one route that cannot carry a
+  // session kept in sessionStorage (issue #27) — so pointing a user at it is
+  // pointing them at the failure this release exists to close.
   if (config.storageState && !existsSync(config.storageState)) {
     await browser.close();
     throw new Error(
-      `no storage state at ${config.storageState} — create one by signing in once, ` +
-        `then saving the session with Playwright's context.storageState({ path })`,
+      `no session file at ${config.storageState} — create one with ` +
+        `clickgraph login ${baseUrl} --storage-state ${config.storageState}`,
     );
   }
   // Read and split here rather than handing Playwright the path: the file may
