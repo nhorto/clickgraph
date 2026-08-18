@@ -62,6 +62,15 @@
  * /orders/1042 page available by direct address. This simulates an app whose
  * fixture data is missing, making a real screen undiscoverable to the walker.
  *
+ * Run with CLUSTER=1 to add /team, a screen with no <form> on it at all: two
+ * loose inputs and a button wired by hand, which is how most React apps write a
+ * form (issue #24). Clicking that button with the fields empty changes nothing,
+ * exactly as a dead button would — so a walk that has not filled them must
+ * report that it could not tell, and one that has must prove the button works.
+ * Its second card puts two buttons beside one field, which is the case where
+ * the grouping cannot be inferred and guessing it would mean typing into fields
+ * that do not belong together.
+ *
  * Run with AUTH=1 to put the whole app behind a login screen, so the walker can
  * be checked against the case it used to get wrong: without a session it walks
  * the login form and reports a clean run of a page nobody cares about.
@@ -72,6 +81,7 @@ const PORT = Number(process.env.PORT ?? 4173);
 const BREAK = process.env.BREAK === '1';
 const EMPTY = process.env.EMPTY === '1';
 const AUTH = process.env.AUTH === '1';
+const CLUSTER = process.env.CLUSTER === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -93,6 +103,7 @@ const page = (title, body) => `<!doctype html>
   button { padding: .4rem .8rem; margin: .25rem .25rem .25rem 0; }
   button[disabled] { opacity: .5; }
   #modal { border: 2px solid #333; padding: 1rem; margin-top: 1rem; }
+  .card { border: 1px solid #ccc; padding: 1rem; margin: 1rem 0; }
 </style></head>
 <body>
 <nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a><a href="/lookup">Look up</a><a href="/people/new">Add person</a><a href="/invite">Invite</a></nav>
@@ -202,6 +213,7 @@ const routes = {
     <h1>Acme Dashboard</h1>
     <p>Welcome back.</p>
     <button id="open-welcome" data-testid="open-welcome">Show tips</button>
+    ${CLUSTER ? `<p><a href="/team" data-testid="team-link">Add to the team</a></p>` : ''}
     <div id="slot"></div>
     <script>
       document.getElementById('open-welcome').addEventListener('click', () => {
@@ -433,6 +445,56 @@ const routes = {
         document.getElementById('invite-result').textContent = 'Invite sent.';
       });
     </script>`),
+
+  // Only served when CLUSTER=1, so the other scenarios keep their contract.
+  // Two cards, and the difference between them is the whole feature: the first
+  // is a group the walker has to infer, the second is one it has to refuse to
+  // infer (issue #24).
+  ...(CLUSTER
+    ? {
+        '/team': page('Team', `
+    <h1>Add to the team</h1>
+
+    <div class="card">
+      <p><label>Name <input type="text" id="team-name" data-testid="team-name" name="name"></label></p>
+      <p><label>Email <input type="email" id="team-email" data-testid="team-email" name="email"></label></p>
+      <button id="send-invite" data-testid="send-invite">Send invite</button>
+    </div>
+    <p id="team-result"></p>
+
+    <div class="card">
+      <p><label>Note <input type="text" id="note" data-testid="note" name="note"></label></p>
+      <button id="save-note" data-testid="save-note">Save note</button>
+      <button id="clear-note" data-testid="clear-note">Clear</button>
+    </div>
+    <p id="note-result"></p>
+
+    <script>
+      // No <form> anywhere on this page, which is the point. "Send invite"
+      // declines an empty invite in silence — indistinguishable, from outside,
+      // from a button wired to nothing. A walk that has not filled the fields
+      // must say it could not tell, and one that has must prove it works.
+      document.getElementById('send-invite').addEventListener('click', async () => {
+        const name = document.getElementById('team-name').value.trim();
+        const email = document.getElementById('team-email').value.trim();
+        if (!name || !email) return;
+        await fetch('/api/signup', { method: 'POST' });
+        document.getElementById('team-result').textContent = 'Invited ' + email;
+      });
+      // The second card has two buttons, so which one "Note" is for is a guess.
+      // Both work on their own, so refusing to group them costs a walk nothing
+      // here — the field stays skipped, and neither button is called dead.
+      document.getElementById('save-note').addEventListener('click', () => {
+        document.getElementById('note-result').textContent =
+          'Saved: ' + document.getElementById('note').value;
+      });
+      document.getElementById('clear-note').addEventListener('click', () => {
+        document.getElementById('note').value = '';
+        document.getElementById('note-result').textContent = 'Cleared';
+      });
+    </script>`),
+      }
+    : {}),
 
   '/feedback': page('Feedback', `
     <h1>Feedback</h1>
