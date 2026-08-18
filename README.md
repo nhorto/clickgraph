@@ -89,12 +89,14 @@ cp -r skill/clickgraph ~/.claude/skills/clickgraph
 
 The hard problem (see [RESEARCH.md](RESEARCH.md)) is deciding whether two screens are "the same state". This is handled in two tiers:
 
-- **identity** = route + headings → decides node id.
+- **identity** = route + *visible* headings → decides node id.
 - **structure** = identity + every interactive control → detects shape changes.
 
 Keeping structure *out* of the node id is what lets a page gain a button without the screen being reported as a different, unreachable screen. Without this split, every ordinary UI change orphans the graph and the tool cries wolf on its author's own work — the failure mode that killed the previous generation of these tools.
 
 **Known limitation, stated plainly:** two genuinely different screens sharing a route *and* their headings collapse into one node. v1 errs toward under-splitting, because a missed split is quieter than a graph that resets every commit.
+
+Only headings the user can actually see are counted. An SPA that keeps every screen mounted and reveals one at a time otherwise hands the same heading list to all of them, which collapses the whole app to a single node and still exits 0 (issue #25). The cost of counting only what is on screen is that a screen with no visible heading is identified by its route alone — accepted, because the remaining tie-breakers are the ones `structure` already carries for the express reason that they move on every ordinary UI edit.
 
 ## Apps behind a login
 
