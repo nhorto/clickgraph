@@ -28,6 +28,11 @@
  *      unwired, so a correct walk must reach it AND report it dead.
  *  12. /orders "Retire order" raises a confirm dialog. The safe decline branch
  *      is observable browser chrome, not a dead control (issue #17).
+ *  13. /kiosk keeps six screens mounted and shows one at a time, with every
+ *      heading in the document belonging to a screen the user cannot see. A
+ *      walk that reads hidden headings gives all six the same identity and
+ *      collapses them into one node it never gets past — and still exits 0
+ *      (issue #25). Reached only by walking /kiosk directly.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -71,6 +76,87 @@ const page = (title, body) => `<!doctype html>
 <body>
 <nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a></nav>
 ${body}
+</body></html>`;
+
+/**
+ * A kiosk flow in the shape issue #25 was found in: one document, every screen
+ * mounted at once, CSS showing one of them at a time. The entry screen carries
+ * zero visible headings and the five screens parked behind it carry all of
+ * them, so a fingerprint that reads headings straight out of the DOM hands
+ * every screen the same identity, the whole flow collapses to one node, and the
+ * walk stops expanding because it believes it has already been everywhere.
+ *
+ * Nothing here is broken on purpose, and that is the point. The failure this
+ * route exists to catch is not a missed finding but a clean exit 0 over an app
+ * the walk never got through — the one outcome the tool is built to prevent.
+ *
+ * The name buttons are the counterweight. Ana and Bo lead to the same PIN
+ * screen with different text on it, and that has to stay one node: identity is
+ * meant to split on the screen you are looking at, not on everything that
+ * differs between two visits to it.
+ *
+ * Deliberately absent from the shared nav, so a walk from / never wanders in
+ * and every existing expectation about the fixture holds unchanged.
+ */
+const KIOSK = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Shop floor terminal</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  button { padding: .4rem .8rem; margin: .25rem .25rem .25rem 0; }
+  .screen { display: none; }
+  .screen.active { display: block; }
+</style></head>
+<body>
+  <section class="screen active" id="idle">
+    <p>Tap to begin.</p>
+    <button data-testid="kiosk-clock-in" data-goto="who">Clock in</button>
+    <button data-testid="kiosk-supervisor" data-goto="supervisor">Supervisor</button>
+  </section>
+  <section class="screen" id="who">
+    <h2>Who are you?</h2>
+    <button data-testid="kiosk-ana" data-goto="pin" data-name="Ana">Ana</button>
+    <button data-testid="kiosk-bo" data-goto="pin" data-name="Bo">Bo</button>
+    <button data-testid="kiosk-who-back" data-goto="idle">Back</button>
+  </section>
+  <section class="screen" id="pin">
+    <h2>Enter your PIN</h2>
+    <p id="pin-who"></p>
+    <button data-testid="kiosk-confirm" data-goto="hello">Confirm</button>
+    <button data-testid="kiosk-pin-back" data-goto="who">Back</button>
+  </section>
+  <section class="screen" id="hello">
+    <h2>Hello</h2>
+    <p>You are clocked in.</p>
+    <button data-testid="kiosk-done" data-goto="idle">Done</button>
+  </section>
+  <section class="screen" id="supervisor">
+    <h2>Supervisor menu</h2>
+    <button data-testid="kiosk-reports" data-goto="reports">Reports</button>
+    <button data-testid="kiosk-sup-back" data-goto="idle">Back</button>
+  </section>
+  <section class="screen" id="reports">
+    <h2>Shift reports</h2>
+    <p>Nothing recorded for this shift.</p>
+    <button data-testid="kiosk-reports-back" data-goto="supervisor">Back</button>
+  </section>
+  <script>
+    // Screens are shown and hidden, never mounted and unmounted. A framework
+    // would do the same thing with a class or a hidden attribute; the DOM the
+    // walker reads is identical either way.
+    const show = (id) => {
+      for (const s of document.querySelectorAll('.screen')) {
+        s.classList.toggle('active', s.id === id);
+      }
+    };
+    for (const b of document.querySelectorAll('button[data-goto]')) {
+      b.addEventListener('click', () => {
+        if (b.dataset.name) {
+          document.getElementById('pin-who').textContent = 'Signing in as ' + b.dataset.name;
+        }
+        show(b.dataset.goto);
+      });
+    }
+  </script>
 </body></html>`;
 
 const routes = {
@@ -280,6 +366,8 @@ const routes = {
           ? '<button id="beep" data-testid="beep">Beep</button>' : '';
       });
     </script>`),
+
+  '/kiosk': KIOSK,
 };
 
 createServer((req, res) => {
