@@ -5,3 +5,4 @@
 /signup
 /feedback
 /about
+/lookup

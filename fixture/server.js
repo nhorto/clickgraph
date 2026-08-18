@@ -38,6 +38,10 @@
  *      gated in the browser rather than the server: without the tab session
  *      replayed, a walk of it sees a sign-in form and nothing else, and the
  *      unwired "Export workspace" button behind it is proof the walk got in.
+ *  15. /lookup "Void order" — dead, and reachable ONLY by typing a code the
+ *      app knows into the lookup field first (issue #20). A synthesized value
+ *      lands on "no order with that code", where it does not exist at all, so
+ *      a walk without --field reports a clean screen and means it.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -79,7 +83,7 @@ const page = (title, body) => `<!doctype html>
   #modal { border: 2px solid #333; padding: 1rem; margin-top: 1rem; }
 </style></head>
 <body>
-<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a></nav>
+<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a><a href="/lookup">Look up</a></nav>
 ${body}
 </body></html>`;
 
@@ -373,6 +377,41 @@ const routes = {
       document.getElementById('feedback').addEventListener('submit', (e) => e.preventDefault());
     </script>`),
 
+  // A whole branch of the app behind one text field. The code below is the
+  // only string that opens it; everything else — including the walker's own
+  // `clickgraph-test` — lands on the not-found line, which is a real screen
+  // with nothing wrong on it. That is what made this invisible rather than
+  // merely uncovered (issue #20).
+  '/lookup': page('Look up an order', `
+    <h1>Look up an order</h1>
+    <form id="lookup">
+      <p><label>Order code <input type="text" id="order-code" name="code" required></label></p>
+      <p><button type="submit" data-testid="look-up">Look up</button></p>
+    </form>
+    <div id="result"></div>
+    <script>
+      // Client-side on purpose: the route does not change, so nothing but the
+      // typed value distinguishes the two screens this form can produce.
+      document.getElementById('lookup').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const code = document.getElementById('order-code').value.trim();
+        const result = document.getElementById('result');
+        if (code !== 'ORD-1042') {
+          result.innerHTML = '<p id="no-match">No order with that code.</p>';
+          return;
+        }
+        result.innerHTML =
+          '<h2 id="found">Order ORD-1042</h2>' +
+          '<p id="status">Status: packed</p>' +
+          '<button id="reprint" data-testid="reprint">Reprint packing slip</button> ' +
+          '<button id="void" data-testid="void-order">Void order</button>';
+        // Wired. Its neighbour is not — the planted defect only a declared
+        // value can reach.
+        document.getElementById('reprint').addEventListener('click', () => {
+          document.getElementById('status').textContent = 'Status: packing slip reprinted';
+        });
+      });
+    </script>`),
   '/about': page('About', `
     <h1>About</h1><p>Acme, since 1998.</p>
     <button id="more" data-testid="more-actions">More actions</button>

@@ -1,12 +1,36 @@
 name: verify
 
+# MANUAL ONLY, because this repo has no runner it can use for free.
+#
+# It used to fire on `push:` with no branch filter AND on `pull_request:`, so a
+# single push to a PR branch started TWO hosted-Ubuntu runs of a suite that
+# walks a browser for ~20 minutes. That is the most expensive shape this
+# workflow could have had, and it ran on every branch push.
+#
+# The sister repo solved the same problem by moving to a self-hosted runner
+# (this shop's Mac), which costs no Actions minutes at all. That runner is
+# registered to THAT repository only, and this account is a User rather than an
+# organization, so there are no account-level runners to inherit. Until the same
+# machine is registered here too, there is nothing to run on that is free.
+#
+# So the gate lives locally: `npm run build && ./scripts/verify.sh`. It is the
+# same script this workflow runs, and it is the authority either way.
+#
+# To bring CI back, register the Mac as a runner for this repo
+# (Settings -> Actions -> Runners -> New self-hosted runner), then set
+# `runs-on: [self-hosted, macOS, ARM64]` below and restore `pull_request:` —
+# NOT `push:`, which is what made this cost double.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
