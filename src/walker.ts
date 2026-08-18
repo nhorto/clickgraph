@@ -508,7 +508,32 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
 
   /** Return to a known state by replaying its action path from the base URL. */
   async function gotoPath(path: Action[]): Promise<boolean> {
-    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    // The click that ended the previous state can still have a navigation in
+    // flight when the walk asks to go back to the entry page — `settle` waits
+    // for the DOM to go quiet, which a navigation already committed to does not
+    // disturb. Playwright refuses to run two navigations at once and throws,
+    // and this line used to be the only one in the function outside the try:
+    // one racing nav link killed the whole walk with a stack trace, where
+    // failing this path costs a single state marked not-reached.
+    //
+    // Worth exactly one retry rather than an immediate failure, because the
+    // interruption says another navigation is already finishing — waiting for
+    // it lands the browser somewhere real, and the second attempt then does
+    // what the first one asked for.
+    try {
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    } catch {
+      try {
+        await page.waitForLoadState('domcontentloaded', { timeout: ACTION_TIMEOUT });
+      } catch {
+        /* whatever it was did not finish either; the retry below is still worth a try */
+      }
+      try {
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+      } catch {
+        return false;
+      }
+    }
     await settle(page, config.settleMs);
     for (const action of path) {
       try {
