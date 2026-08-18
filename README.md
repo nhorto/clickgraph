@@ -345,6 +345,14 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
   into class names, so including controls would report an effect for every click
   ever made. The same signal covers step rails, progress bars and a tab
   underline drawn on a div.
+- **The walk scrolls to reach a control, and must not take credit for it.**
+  Playwright's click auto-scrolls its target, so a reading taken across that
+  scroll calls every control below the fold a working scroller — and because the
+  visual signal samples viewport-relative rectangles, it was already vouching
+  for dead buttons on the strength of the walk's own movement. The scroll now
+  happens first and deliberately, and the baseline is re-read from where the
+  click will actually land. What is left between the two readings is the action:
+  a back-to-top button, a jump link, a carousel arrow moving a strip.
 
 ## Layout
 

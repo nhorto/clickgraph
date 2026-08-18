@@ -416,6 +416,97 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
 }
 
 /**
+ * Where the page and each of its scrollable regions are scrolled to.
+ *
+ * Read on its own rather than folded into `captureState`, because unlike every
+ * other signal this one is not a property of the state: the walk moves the page
+ * itself to reach a control, so a scroll offset only means something when both
+ * readings are taken around the action alone (issue #22). The walker owns that
+ * pairing, so the reading has to be something it can ask for by name.
+ */
+export interface ScrollReading {
+  x: number;
+  y: number;
+  /** One entry per element that can scroll, in document order. */
+  panes: { key: string; top: number; left: number }[];
+}
+
+export async function readScrollPositions(page: Page): Promise<ScrollReading | null> {
+  try {
+    return await page.evaluate(() => {
+      // Overflow is checked before the computed style so the expensive call is
+      // made only for the handful of elements that could possibly scroll: the
+      // dimension reads flush layout once and are then answered from cache,
+      // while getComputedStyle on every node of a large app is not free.
+      const scrollable = (v: string) => v === 'auto' || v === 'scroll' || v === 'overlay';
+      const panes: { key: string; top: number; left: number }[] = [];
+      for (const el of Array.from(document.querySelectorAll('*')) as any[]) {
+        const overflowsY = el.scrollHeight > el.clientHeight + 1;
+        const overflowsX = el.scrollWidth > el.clientWidth + 1;
+        if (!overflowsY && !overflowsX) continue;
+        const style = window.getComputedStyle(el);
+        if (!(overflowsY && scrollable(style.overflowY)) &&
+            !(overflowsX && scrollable(style.overflowX))) continue;
+        // Keyed by position and tag, the way form state and transforms are:
+        // identity only has to hold between two readings taken seconds apart.
+        // The class attribute is deliberately not part of the key — a page that
+        // flips a class on its scroller would otherwise lose the pane's
+        // identity and, with it, the reading.
+        panes.push({
+          key: `${panes.length}:${el.tagName}${el.id ? `#${el.id}` : ''}`,
+          top: Math.round(el.scrollTop),
+          left: Math.round(el.scrollLeft),
+        });
+      }
+      return { x: Math.round(window.scrollX), y: Math.round(window.scrollY), panes };
+    });
+  } catch {
+    // The page navigated out from under the read. Not knowing is reported as
+    // not knowing; see compareScroll.
+    return null;
+  }
+}
+
+/**
+ * How far a scroll offset has to move before it counts.
+ *
+ * The walk brings a control into view with Playwright's own scroll before it
+ * takes the baseline, and the click's scroll then finds nothing left to do — so
+ * in principle the residue is zero. In practice a sticky header, a
+ * `scroll-margin` or a sub-pixel device ratio can leave a pixel or two behind,
+ * and every effect this signal exists to catch — back to top, a jump link, a
+ * carousel arrow — moves hundreds. A few pixels of slack costs nothing real and
+ * removes the one way this could report a dead control as working.
+ */
+const SCROLL_TOLERANCE = 4;
+
+export type ScrollChange = 'same' | 'page' | 'region' | 'unknown';
+
+/**
+ * `unknown` is not `same`. A missing reading, or a set of scrollers that has
+ * itself changed between the two, means the comparison cannot be trusted —
+ * and both callers want the cautious reading of that: the walker re-takes its
+ * baseline, and `classifyOutcome` claims no effect it cannot prove.
+ */
+export function compareScroll(
+  before: ScrollReading | null,
+  after: ScrollReading | null,
+): ScrollChange {
+  if (!before || !after) return 'unknown';
+  const moved = (a: number, b: number) => Math.abs(a - b) > SCROLL_TOLERANCE;
+  if (moved(before.x, after.x) || moved(before.y, after.y)) return 'page';
+  if (before.panes.length !== after.panes.length) return 'unknown';
+  let region = false;
+  for (let i = 0; i < before.panes.length; i++) {
+    const a = before.panes[i];
+    const b = after.panes[i];
+    if (a.key !== b.key) return 'unknown';
+    if (moved(a.top, b.top) || moved(a.left, b.left)) region = true;
+  }
+  return region ? 'region' : 'same';
+}
+
+/**
  * Effects that live in browser chrome, not in the page (issue #9).
  *
  * A button wired to `window.print()` has no page-side footprint at all: no
@@ -553,6 +644,13 @@ export function classifyOutcome(
     injectedFailures?: string[];
     chromeEffects?: string[];
     dialogs?: { type: string; message: string }[];
+    /**
+     * What moved between the moment the click was about to land and the moment
+     * it had. Supplied by the walker rather than read off the two snapshots,
+     * because only the walker knows which scrolling was the app's and which was
+     * its own (issue #22).
+     */
+    scrolled?: ScrollChange;
   },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
@@ -617,6 +715,26 @@ export function classifyOutcome(
     before.contentHash !== after.contentHash
   ) {
     return { ...base, ...handled, kind: 'state-changed' };
+  }
+
+  // The whole effect was to move the page, or a region of it: back to top, a
+  // jump link, a carousel arrow that slides a strip. No text changes, no
+  // attribute changes, no control changes, so before this the control sat in
+  // the report beside the genuinely unwired ones (issue #22).
+  //
+  // Read BEFORE the visual signal on purpose, even though a window scroll also
+  // moves every rectangle `visual` samples. Both answers are "this control
+  // works"; only one of them says what it did, and "it scrolled the page" is
+  // the more useful sentence to hand a reader than "the view changed visually".
+  if (watch.scrolled === 'page' || watch.scrolled === 'region') {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: watch.scrolled === 'page'
+        ? 'scrolled the page — no text or control changed'
+        : 'scrolled a region of the page — no text or control changed',
+    };
   }
 
   // Same controls, same words, different picture. Reported as a working control

@@ -583,6 +583,45 @@ node -e '
 ' /tmp/clickgraph-keypad.json
 check "$?" "0" "the unwired keypad control is still a finding, not an excused one"
 
+echo "M: a control whose only effect is scrolling is not a dead control (#22)"
+node dist/cli.js walk "$URL/release-notes" --quiet --out /tmp/clickgraph-scroll.json \
+  >/tmp/clickgraph-scroll.txt 2>&1
+check "$?" "0" "the scrolling walk succeeds"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const walked = (name) => {
+    const edge = graph.edges.find((e) => new RegExp(name).test(e.action.name));
+    if (!edge) fail(`${name} was never walked`);
+    return edge;
+  };
+  const page = walked("Back to top");
+  if (page.outcome.kind !== "state-changed") fail(`back to top came back ${page.outcome.kind}`);
+  if (!/scrolled the page/.test(page.outcome.note ?? ""))
+    fail(`back to top does not say what it did: ${page.outcome.note}`);
+  const region = walked("Scroll the notes");
+  if (region.outcome.kind !== "state-changed") fail(`the pane scroller came back ${region.outcome.kind}`);
+  if (!/scrolled a region/.test(region.outcome.note ?? ""))
+    fail(`the pane scroller does not say what it did: ${region.outcome.note}`);
+' /tmp/clickgraph-scroll.json
+check "$?" "0" "reports the window scroller and the in-element scroller as working"
+# The trap, and the reason /release-notes puts 2400px above this control: the
+# walk scrolls to reach anything below the fold, so a reading taken across that
+# scroll instead of across the click alone vouches for every dead control down
+# there. This one came back "changed state — the view changed visually" before
+# the fix, on the strength of the walk's own scrolling and nothing else.
+grep -q 'NO EFFECT.*"Share release notes"' /tmp/clickgraph-scroll.txt
+check "$?" "0" "still reports the dead control below the fold as dead"
+node -e '
+  const graph = require(process.argv[1]);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const dead = graph.edges.find((e) => /Share release notes/.test(e.action.name));
+  if (!dead) fail("the dead control below the fold was never walked");
+  if (dead.outcome.kind !== "no-effect") fail(`it came back ${dead.outcome.kind}: ${dead.outcome.note}`);
+  if (dead.outcome.benign) fail("it was excused instead of reported");
+' /tmp/clickgraph-scroll.json
+check "$?" "0" "the walk own scroll-into-view is never credited to the control it reached"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]

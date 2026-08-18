@@ -76,11 +76,12 @@ ${body}
 /**
  * A page with no nav, for the cases that have to be walked on their own.
  *
- * The keypad below is about what a snapshot can and cannot see, and it depends
- * on the exact order its controls are walked in: the mask fills up as the keys
- * are pressed. Six nav links in front of it would put a navigation and a replay
- * between every pair of presses, and drag the rest of the app into a walk that
- * is not about it.
+ * The two below are about what a snapshot can and cannot see, and both depend
+ * on the exact order their controls are walked in — a PIN mask fills up as the
+ * keys are pressed, and a scroll check needs the page to still be at the top
+ * when it reaches the control below the fold. Six nav links in front of them
+ * would put a navigation and a replay between every pair of presses, and drag
+ * the rest of the app into a walk that is not about it.
  */
 const bare = (title, body) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>${title}</title>
@@ -352,6 +353,50 @@ const routes = {
       // "Forgot your PIN?" is intentionally wired to nothing at all.
     </script>`),
 
+  /*
+   * The scrolling controls of issue #22, and the trap that comes with them.
+   *
+   * "Scroll the notes" moves a region, "Back to top" moves the window. Neither
+   * changes a character of text, an attribute or a control, so both used to
+   * land in the report beside the genuinely unwired ones.
+   *
+   * "Share release notes" is the reason the filler below is 2400px tall. It is
+   * wired to nothing and it sits far below the fold, so the walk has to scroll
+   * to reach it — which means a naive before/after reading of window.scrollY
+   * calls it a working scroller, and a baseline taken before the scroll-into-
+   * view makes even the viewport-relative geometry in `visual` disagree with
+   * itself. Both mistakes report a dead control as working. A check without a
+   * dead control this far down the page would pass for the wrong reason.
+   */
+  '/release-notes': bare('Release notes', `
+    <h1>Release notes</h1>
+    <div id="notes">
+      <p>2.4.0 — the walker learned to read scroll position.</p>
+      <p>2.3.0 — class attributes joined the snapshot.</p>
+      <p>2.2.0 — dialogs are observed rather than feared.</p>
+      <p>2.1.0 — faults can be injected for a whole walk.</p>
+      <p>2.0.0 — controls revealed by a self-loop are walked.</p>
+      <p>1.9.0 — form values are read off the properties.</p>
+      <p>1.8.0 — browser chrome effects are reported by a shim.</p>
+      <p>1.7.0 — geometry and colour became an effect signal.</p>
+    </div>
+    <p><button id="scroll-notes">Scroll the notes</button></p>
+    <div id="filler">A very long changelog lives here.</div>
+    <p><button id="back-to-top">Back to top</button></p>
+    <p><button id="share-notes">Share release notes</button></p>
+    <style>
+      #notes { height: 6rem; overflow-y: auto; border: 1px solid #333; padding: 0 .5rem }
+      #filler { height: 2400px; background: #f0f0f0 }
+    </style>
+    <script>
+      document.getElementById('scroll-notes').addEventListener('click', () => {
+        document.getElementById('notes').scrollTop += 120;
+      });
+      document.getElementById('back-to-top').addEventListener('click', () => {
+        window.scrollTo(0, 0);
+      });
+      // "Share release notes" is intentionally wired to nothing at all.
+    </script>`),
 };
 
 createServer((req, res) => {
