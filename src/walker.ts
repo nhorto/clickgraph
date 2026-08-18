@@ -634,9 +634,15 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       // Forms whose submit button is on screen. Their fields are exercised by
       // the submit, not one at a time — a form with no submit in reach has no
       // such action to belong to, so its fields fall back to being skipped.
+      //
+      // A submit that is disabled right now still counts, because filling is
+      // what un-disables it: every create-account form disables its submit
+      // until the fields are valid. Excluding it here sent its own fields to
+      // the needs-input skip, which is how the form ended up unreachable from
+      // both ends at once (issue #34).
       const submittable = new Set(
         state.elements
-          .filter((e) => e.formSubmit && e.formId && !e.disabled)
+          .filter((e) => e.formSubmit && e.formId && (config.fillForms || !e.disabled))
           .map((e) => e.formId as string),
       );
 
@@ -688,7 +694,16 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           continue;
         }
 
-        if (el.disabled) {
+        // A disabled control is normally the end of the story. A form's submit
+        // is the exception: "disabled until the form is valid" is the most
+        // common shape there is, and the only thing that can make it valid is
+        // typing into the form it submits. Skipping it here meant the fill
+        // below never ran, so the submit stayed disabled forever and the whole
+        // form — every create-account, invite-user and change-password flow —
+        // was unwalkable while the run still exited 0 (issue #34). Let it
+        // through to the fill; whether it actually became enabled is re-read
+        // from the live page afterwards, and it is skipped there if it did not.
+        if (el.disabled && !(config.fillForms && el.formSubmit && el.formId)) {
           skipped.push({ nodeId: state.nodeId, label: el.selector.label, reason: 'disabled' });
           continue;
         }
@@ -886,6 +901,23 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           // with live validation redraws while a field is being typed into, and
           // that redraw would otherwise be credited to the submit button.
           if (filled.length > 0) atSnapshot = await captureState(page);
+
+          // The submit was allowed through the disabled gate on the strength of
+          // the fill. Ask the page whether that worked rather than assuming it:
+          // a form can stay disabled because it wants a field nothing here can
+          // supply — a captcha, a confirm-password that must match, a value the
+          // server has to bless. Clicking it then proves nothing, so this is
+          // where such a form gets its honest skip, with the reason attached.
+          if (await resolve(page, target).isDisabled({ timeout: ACTION_TIMEOUT })) {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label, reason: 'disabled',
+              detail: filled.length > 0
+                ? `still disabled after filling ${filled.length} field(s) — it needs something ` +
+                  'the walk cannot supply'
+                : 'disabled, and its form had no field the walk could fill',
+            });
+            continue;
+          }
         }
 
         // Clicking the submit button of a form the browser will not accept
