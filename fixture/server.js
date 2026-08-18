@@ -42,6 +42,18 @@
  *      app knows into the lookup field first (issue #20). A synthesized value
  *      lands on "no order with that code", where it does not exist at all, so
  *      a walk without --field reports a clean screen and means it.
+ *  16. /people/new — a create-a-person form whose submit is disabled until
+ *      every field is filled, one of them a password (issue #34). Filling is
+ *      the only thing that enables the submit, and reaching the submit is what
+ *      triggers filling, so a walk that skips disabled controls first can open
+ *      it from neither end. Declared values must fill and submit it; without
+ *      them it must be refused once, against the submit, with the reason said
+ *      out loud rather than left to be inferred from a run that exits 0.
+ *  17. /invite "Send invite" — the form the walk is right to leave shut. It
+ *      un-disables only for a code no synthesized value can guess, so a
+ *      correct walk fills it, re-reads the submit, finds it still disabled and
+ *      says so. Clicking it anyway would report a working form as a dead
+ *      control, which is the failure the fix for 16 must not trade into.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -83,7 +95,7 @@ const page = (title, body) => `<!doctype html>
   #modal { border: 2px solid #333; padding: 1rem; margin-top: 1rem; }
 </style></head>
 <body>
-<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a><a href="/lookup">Look up</a></nav>
+<nav><a href="/">Home</a><a href="/orders">Orders</a><a href="/settings">Settings</a><a href="/signup">Sign up</a><a href="/feedback">Feedback</a><a href="/about">About</a><a href="/lookup">Look up</a><a href="/people/new">Add person</a><a href="/invite">Invite</a></nav>
 ${body}
 </body></html>`;
 
@@ -362,6 +374,63 @@ const routes = {
         await fetch('/api/signup', { method: 'POST' });
         document.getElementById('signup-result').textContent =
           'Account created for ' + document.getElementById('email').value;
+      });
+    </script>`),
+
+  // The shape issue #34 is about: a create-a-user form whose submit is
+  // disabled until every field is non-empty, and one of those fields is a
+  // password. The submit can only become enabled by typing, and typing is
+  // only done on behalf of a submit — so a walker that skips disabled
+  // controls before it fills forms can never open this door, and reports the
+  // whole form as skipped while exiting 0.
+  '/people/new': page('Add person', `
+    <h1>Add person</h1>
+    <form id="new-person">
+      <p><label>Name <input type="text" data-testid="person-name" id="person-name" name="name" required></label></p>
+      <p><label>Email <input type="email" data-testid="person-email" id="person-email" name="email" required></label></p>
+      <p><label>Password <input type="password" data-testid="person-password" id="person-password" name="password" required></label></p>
+      <p><button type="submit" data-testid="add-person" id="add-person" disabled>Add person</button></p>
+    </form>
+    <p id="person-result"></p>
+    <script>
+      // Disabled until valid — the pattern every real create-account form uses.
+      const form = document.getElementById('new-person');
+      const submit = document.getElementById('add-person');
+      const fields = ['person-name', 'person-email', 'person-password']
+        .map((id) => document.getElementById(id));
+      const sync = () => {
+        submit.disabled = !fields.every((f) => f.value.trim() !== '');
+      };
+      for (const f of fields) f.addEventListener('input', sync);
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        document.getElementById('person-result').textContent =
+          'Added ' + document.getElementById('person-name').value;
+      });
+    </script>`),
+
+  // The other side of issue #34: a form the walk is right to leave alone. The
+  // submit un-disables only for a code the app already knows, which no
+  // synthesized value can be, so filling it changes nothing. The walk must
+  // fill it, notice the submit is still disabled, and say why — never click a
+  // dead control and never call the form working.
+  '/invite': page('Invite a teammate', `
+    <h1>Invite a teammate</h1>
+    <form id="invite">
+      <p><label>Email <input type="email" data-testid="invite-email" id="invite-email" name="email" required></label></p>
+      <p><label>Team code <input type="text" data-testid="invite-code" id="invite-code" name="code" required></label></p>
+      <p><button type="submit" data-testid="send-invite" id="send-invite" disabled>Send invite</button></p>
+    </form>
+    <p id="invite-result"></p>
+    <script>
+      const code = document.getElementById('invite-code');
+      const send = document.getElementById('send-invite');
+      code.addEventListener('input', () => {
+        send.disabled = !/^ACME-\\d{4}$/.test(code.value.trim());
+      });
+      document.getElementById('invite').addEventListener('submit', (e) => {
+        e.preventDefault();
+        document.getElementById('invite-result').textContent = 'Invite sent.';
       });
     </script>`),
 
