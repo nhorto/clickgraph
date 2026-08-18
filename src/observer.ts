@@ -267,7 +267,27 @@ function extractPageData() {
     };
   });
 
+  // Filtered like every other reader in this function, and for a sharper reason
+  // than consistency: these headings are what state identity is built from, and
+  // markup the user cannot see has no business deciding which screen they are
+  // on. An SPA that keeps all its screens mounted and shows one at a time — a
+  // wizard, a tabbed settings page, a kiosk flow — handed every screen the same
+  // heading list, so identity barely moved as the walk moved. The screens
+  // collapsed into a single node, the walker stopped expanding because it
+  // believed it had been there, and the run still exited 0 over an app it never
+  // got through (issue #25). The landmarks it reported named only hidden
+  // screens: five anchors, not one of them on the page.
+  //
+  // A screen with no visible heading falls back to route-only identity, and
+  // that is left standing on purpose. Two heading-less screens on one route
+  // still collapse — but they collapsed before this too, and the only
+  // tie-breakers on offer are the control list and the body text, which
+  // `structure` already carries precisely because they move whenever anyone
+  // edits the UI. Promoting either into identity would trade a quiet
+  // under-split for a graph that orphans itself every commit, which is the
+  // costlier failure and the one README argues against.
   const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
+    .filter(isVisible)
     .map((h) => (h.textContent || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 

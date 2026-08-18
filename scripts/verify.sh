@@ -15,6 +15,7 @@
 #   I  CLI, graph, and JSON output identify the clickgraph build that produced them
 #   J  declared routes expose screens that fixture state left unreachable
 #   K  a safely dismissed confirm dialog is observed, not called a dead control
+#   L  a screen CSS is hiding does not lend its headings to the one on screen
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -538,6 +539,67 @@ node -e '
   });
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
+
+echo "L: a screen CSS is hiding does not lend its headings to the one on screen (issue #25)"
+# /kiosk is six screens in one document, shown one at a time, and every heading
+# in it belongs to a screen the user is not looking at. Read without a
+# visibility filter they gave all six screens the same identity: one node, eight
+# interactions, no findings, exit 0 — a pass over a flow the walk never got past
+# the front door of. The entry screen has no heading of its own, which is what
+# left the borrowed ones as the whole of its identity.
+#
+# The paths below are handed to node as arguments rather than written into the
+# assertion, so the check reads the same files the redirects just wrote even
+# where the shell and node disagree about where /tmp is.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/kiosk" --quiet --json --out /tmp/clickgraph-kiosk-graph.json \
+  >/tmp/clickgraph-kiosk.json 2>/dev/null
+check "$?" "0" "the kiosk flow walks with nothing to report"
+node -e '
+  const [verdictPath, graphPath] = process.argv.slice(1);
+  const v = require(verdictPath);
+  const g = require(graphPath);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const nodes = Object.values(g.nodes);
+  if (v.coverage.states !== 6) fail(`the six screens collapsed to ${v.coverage.states}`);
+  if (v.coverage.walked !== 11) fail(`want 11 interactions, got ${v.coverage.walked}`);
+  // A control on a collapsed screen survives only through the self-loop that
+  // revealed it, and is skipped as unreachable once the walk has moved on
+  // (issue #8). Three were lost that way here. Screens that are their own nodes
+  // carry their own control lists, so nothing is left out of reach.
+  if (v.coverage.skipped.length !== 0)
+    fail(`nothing here should be out of reach: ${JSON.stringify(v.coverage.skipped)}`);
+  // Landmarks exist to say which screen a node is. A node holding two of these
+  // headings is holding one that belongs to a screen nobody can see.
+  const crowded = nodes.filter((n) => n.fingerprint.landmarks.length > 1);
+  if (crowded.length)
+    fail(`landmarks from screens that are not showing: ${JSON.stringify(crowded.map((n) => n.fingerprint.landmarks))}`);
+  const named = nodes.map((n) => n.fingerprint.landmarks[0] ?? "").sort().join("|");
+  const want = ["", "Enter your PIN", "Hello", "Shift reports", "Supervisor menu", "Who are you?"].join("|");
+  if (named !== want) fail(`screens are not identified one for one: ${named}`);
+' /tmp/clickgraph-kiosk.json /tmp/clickgraph-kiosk-graph.json 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "each screen is its own node, named by the heading the user can see"
+
+# The other half of the trade, and the reason this is a filter and not a richer
+# identity. Ana and Bo reach the same PIN screen with different text on it;
+# minting two nodes for that would be over-splitting, the failure case A guards
+# against for the rest of the app. Identity moves when the screen does, and not
+# for anything else that differs between two visits to it.
+node -e '
+  const [graphPath] = process.argv.slice(1);
+  const g = require(graphPath);
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const nodes = Object.values(g.nodes);
+  const who = nodes.find((n) => n.fingerprint.landmarks[0] === "Who are you?");
+  if (!who) fail("the name screen was never reached");
+  const named = g.edges.filter((e) => e.from === who.id && /^(Ana|Bo)$/.test(e.action.name));
+  if (named.length !== 2) fail(`want both name buttons walked, got ${named.length}`);
+  if (named[0].to !== named[1].to) fail("one screen reached two ways became two nodes");
+  const pin = nodes.find((n) => n.id === named[0].to);
+  if (pin?.fingerprint.landmarks[0] !== "Enter your PIN")
+    fail(`the names did not lead to the PIN screen: ${JSON.stringify(pin?.fingerprint.landmarks)}`);
+' /tmp/clickgraph-kiosk-graph.json 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "two ways onto one screen still reach a single node"
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
