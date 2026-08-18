@@ -107,20 +107,65 @@ async function runPreWalk(command: string, log: (message: string) => void): Prom
 /**
  * Does the entry page look like a login screen?
  *
- * A visible password field is the signal that stands on its own. The weaker
- * case — a sign-in control on a route named for authentication — is included
- * because passwordless and SSO front doors have no password field at all.
+ * Two signals, and neither stands entirely alone. A password field is the
+ * strong one, but it is not proof: a create-account page, an invite-a-user
+ * page and a change-your-password page all have one, and none of them is a
+ * door. The weaker case — a sign-in control on a route named for
+ * authentication — is included because passwordless and SSO front doors have
+ * no password field at all.
  *
- * This only ever adds a caveat to the report. Getting it wrong costs a sentence;
- * missing a login wall costs a clean run that covered nothing but the door.
+ * What separates a door from a form that merely holds a password is where you
+ * can go from it. A login screen is a dead end by construction: submit the
+ * form or leave. A page inside an app sits in the app's own navigation, and
+ * that navigation is visible on the entry snapshot without walking anywhere.
+ * So the password signal is believed unless the page is demonstrably somewhere
+ * you can already move around in — which keeps the flag loud for the shapes it
+ * was built for, and stops it from firing on the highest-consequence forms in
+ * any app (issue #36).
+ *
+ * This used to be described as costing only a sentence when it was wrong. It
+ * does not: the flag clears `ok` and fails the run, so a false positive costs
+ * the whole walk. Hence corroboration.
  */
 function looksLikeAuthWall(url: string, elements: ElementDescriptor[]): boolean {
-  if (elements.some((el) => el.inputType === 'password')) return true;
   const authRoute = /(^|\/)(login|signin|sign-in|auth|authenticate|sso)(\/|$|\?)/i.test(url);
   const signInControl = elements.some((el) =>
     /\b(sign|log)\s?in\b|\bcontinue with\b/i.test(el.name),
   );
+  if (elements.some((el) => el.inputType === 'password')) {
+    // Named for auth, or offering to sign you in: a door either way, however
+    // much else is on the page.
+    if (authRoute || signInControl) return true;
+    return !hasAppNavigation(url, elements);
+  }
   return authRoute && signInControl;
+}
+
+/**
+ * Does this page offer a way into an app, rather than just a way through it?
+ *
+ * Counted as distinct in-app destinations, not as links: a login form's
+ * "Forgot your password?" and "Create an account" are two links to the two
+ * places a door leads, and a row of them is still a door. Three separate
+ * routes is a navigation bar, which no login screen has and every page inside
+ * an app does.
+ */
+function hasAppNavigation(url: string, elements: ElementDescriptor[]): boolean {
+  const here = new URL(url).pathname;
+  const destinations = new Set<string>();
+  for (const el of elements) {
+    if (!el.href || isExternal(el, url)) continue;
+    if (/(^|\/)(login|signin|sign-in|register|signup|sign-up|forgot|reset)(\/|$|\?)/i.test(el.href)) {
+      continue;
+    }
+    try {
+      const to = new URL(el.href, url).pathname;
+      if (to !== here) destinations.add(to);
+    } catch {
+      // An href the URL parser will not take is not a destination worth counting.
+    }
+  }
+  return destinations.size >= 3;
 }
 
 /**
