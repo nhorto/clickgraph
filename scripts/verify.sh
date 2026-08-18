@@ -539,6 +539,80 @@ node -e '
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "the fault spec parses methods and status, and refuses nonsense"
 
+echo "L: a session kept in sessionStorage is said out loud (issue #27)"
+# /tab-app holds its whole session in sessionStorage, which Playwright's storage
+# state does not carry. `login` blocks on a keypress, so what runs below is
+# everything login does AFTER that keypress, against a context signed in by
+# script instead of by hand. The keypress itself is the only part no check here
+# can stand in for.
+start_fixture PORT="$PORT"
+# Written beside the graph rather than in a temp dir: this file is the subject
+# of the check, one process writes it and another reads it, and .uigraph is
+# already gitignored precisely because a session file holds live cookies.
+mkdir -p .uigraph
+rm -f .uigraph/tab-session.json
+CLICKGRAPH_URL="$URL" node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  (async () => {
+    const { chromium } = await import("playwright");
+    const { saveSignedInSession } = await import("./dist/login.js");
+    const browser = await chromium.launch();
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(process.env.CLICKGRAPH_URL + "/tab-app");
+    await page.fill("#tab-email", "walker@example.com");
+    await page.fill("#tab-password", "not-read-by-anything");
+    await page.click("button[type=submit]");
+    await page.waitForSelector("[data-testid=tab-export]");
+    const said = [];
+    await saveSignedInSession(context, "./.uigraph/tab-session.json", (m) => said.push(m));
+    await browser.close();
+    const heard = said.join(" | ");
+    if (!/Session saved to/.test(heard)) fail("login stopped reporting where it saved: " + heard);
+    if (!/WARNING.*sessionStorage/.test(heard))
+      fail("login said nothing about a session it cannot carry: " + heard);
+    if (!/login screen again/.test(heard))
+      fail("the warning does not say what will go wrong: " + heard);
+    // The diagnosis itself, asserted rather than assumed: what Playwright saved
+    // for this app is empty, which is why the warning has to exist.
+    const saved = require("./.uigraph/tab-session.json");
+    if (saved.cookies.length !== 0 || saved.origins.length !== 0)
+      fail("the fixture no longer reproduces the issue: " + JSON.stringify(saved));
+  })().catch((e) => fail(String((e && e.stack) || e)));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "login warns, at capture time, that the session it saved carries nothing"
+
+# The other half of being right: an app that keeps a wizard step in
+# sessionStorage and its session in a cookie must hear nothing. A warning that
+# fires on ordinary sessionStorage use is a warning everyone learns to ignore.
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  import("./dist/session.js").then(({ sessionStorageOnlyOrigins }) => {
+    const scratch = [{ origin: "https://app.example.com", items: [{ name: "wizard.step", value: "2" }] }];
+    const cookie = (domain) => ({
+      cookies: [{ name: "sid", value: "x", domain, path: "/", expires: -1,
+        httpOnly: true, secure: true, sameSite: "Lax" }],
+      origins: [],
+    });
+    if (sessionStorageOnlyOrigins(cookie("app.example.com"), scratch).length !== 0)
+      fail("an app whose session is a cookie was warned about its scratch sessionStorage");
+    if (sessionStorageOnlyOrigins(cookie(".example.com"), scratch).length !== 0)
+      fail("a parent-domain cookie was not recognised as covering this origin");
+    if (sessionStorageOnlyOrigins(cookie("auth.unrelated.test"), scratch).length !== 1)
+      fail("a cookie for an unrelated host was counted as this origin session");
+    const local = { cookies: [], origins: [
+      { origin: "https://app.example.com", localStorage: [{ name: "token", value: "y" }] },
+    ] };
+    if (sessionStorageOnlyOrigins(local, scratch).length !== 0)
+      fail("an app whose session is in localStorage was warned about it anyway");
+    if (sessionStorageOnlyOrigins({ cookies: [], origins: [] }, scratch)[0] !== "https://app.example.com")
+      fail("an origin with nothing saved but sessionStorage was not reported");
+    if (sessionStorageOnlyOrigins({ cookies: [], origins: [] }, []).length !== 0)
+      fail("an app with no sessionStorage at all was warned about it");
+  });
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "sessionStorage kept beside a real cookie session is not warned about"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]

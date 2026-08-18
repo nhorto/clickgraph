@@ -28,6 +28,11 @@
  *      unwired, so a correct walk must reach it AND report it dead.
  *  12. /orders "Retire order" raises a confirm dialog. The safe decline branch
  *      is observable browser chrome, not a dead control (issue #17).
+ *  13. /tab-app keeps its whole session in sessionStorage, which a Playwright
+ *      storage state does not carry (issue #27). Unlinked from the nav and
+ *      gated in the browser rather than the server: without the tab session
+ *      replayed, a walk of it sees a sign-in form and nothing else, and the
+ *      unwired "Export workspace" button behind it is proof the walk got in.
  *
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
@@ -280,6 +285,44 @@ const routes = {
           ? '<button id="beep" data-testid="beep">Beep</button>' : '';
       });
     </script>`),
+
+  // The app of issue #27: its session lives in sessionStorage, so a Playwright
+  // storage state saves nothing of it. Deliberately standalone — no nav, no
+  // cookie, no server-side gate — so a walk of this route sees the door and
+  // only the door until the tab session is replayed into it.
+  '/tab-app': `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Tab workspace</title></head>
+<body>
+  <div id="root"></div>
+  <script>
+    // Per tab, not for ever: office machines are shared, and a session that
+    // outlives the tab is the thing this app refuses to have.
+    const KEY = 'acme.tab-session';
+    function render() {
+      const root = document.getElementById('root');
+      if (sessionStorage.getItem(KEY) !== null) {
+        // Only reachable with the tab session present, and wired to nothing:
+        // a walk that reports this button is a walk that really got inside.
+        root.innerHTML = '<h1>Tab workspace</h1><p>Signed in, for this tab only.</p>' +
+          '<button id="tab-export" data-testid="tab-export">Export workspace</button>';
+        return;
+      }
+      root.innerHTML = '<h1>Sign in</h1>' +
+        '<form id="tab-signin">' +
+        '<p><label>Email <input type="email" id="tab-email" name="email" required></label></p>' +
+        '<p><label>Password <input type="password" id="tab-password" name="password" required></label></p>' +
+        '<button type="submit">Sign in</button></form>';
+      document.getElementById('tab-signin').addEventListener('submit', (e) => {
+        e.preventDefault();
+        sessionStorage.setItem(KEY, JSON.stringify({
+          user: document.getElementById('tab-email').value, token: 'tab-token-1042',
+        }));
+        render();
+      });
+    }
+    render();
+  </script>
+</body></html>`,
 };
 
 createServer((req, res) => {
