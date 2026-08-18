@@ -1140,6 +1140,43 @@ node -e '
   if (pw.value !== "a-real-password") fail(`the declared password was not the one typed: ${pw.value}`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "fills and submits both forms, typing the declared password and no other"
+echo "S: a page that merely holds a password field is not a door (issue #36)"
+# The failure this guards against is the mirror of E's. E is about a login
+# screen being walked as though it were the app; this is about a page inside
+# the app being refused as though it were a login screen. The signal that used
+# to answer on its own — a visible password field — is on every create-account,
+# invite-user and change-password page there is, which made the highest-
+# consequence forms in any app the ones that could not be walked at all.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/people/new" --quiet --json --fill-forms --max-depth 1 \
+  --field '[data-testid="person-name"]=Walked Person' \
+  --field '[data-testid="person-email"]=walked@example.com' \
+  --field '[data-testid="person-password"]=a-real-password' \
+  --out /tmp/clickgraph-pwpage.json >/tmp/clickgraph-pwpage-out.json 2>/dev/null
+check "$?" "0" "a form page holding a password does not fail the run"
+node -e '
+  const v = require("/tmp/clickgraph-pwpage-out.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (v.load.likelyAuthWall) fail("an add-a-person form was called a login screen");
+  if (v.ok !== false && /login screen/.test(v.verdict))
+    fail(`the verdict still calls it a door: ${v.verdict}`);
+  if (v.ok !== true) fail(`the walk was failed for something else: ${v.verdict}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "walks it as a page in an app, not as the door to one"
+
+# The corroboration must not be a licence to miss a real gate. Both shapes the
+# detector exists for have to keep failing: the server-side wall E walks, and
+# the in-browser one whose session a storage state cannot carry.
+node dist/cli.js walk "$URL/tab-app" --quiet --json --max-depth 1 \
+  >/tmp/clickgraph-pwpage-tab.json 2>/dev/null
+check "$?" "1" "a gate that only the browser enforces still fails the run"
+node -e '
+  const v = require("/tmp/clickgraph-pwpage-tab.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  if (!v.load.likelyAuthWall) fail("the in-browser gate stopped being detected");
+  if (!/login screen/.test(v.verdict)) fail("the verdict no longer says it walked a door");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "still names the in-browser gate as a login screen"
 
 
 echo ""
