@@ -548,6 +548,66 @@ const routes = {
         });
       });
     </script>`),
+  // A submit that the walk's own form-filling can REMOVE (issue #46). Choosing
+  // the empty bay swaps the whole block for a sentence, so the button the walk
+  // enumerated is gone from the DOM by the time it asks whether it is disabled.
+  // Legitimate app behaviour, and it used to abort the entire run: a locator
+  // that no longer resolves costs a full actionability timeout and then throws.
+  '/dispatch': page('Dispatch', `
+    <h1>Dispatch</h1>
+    <form id="dispatch">
+      <label>Bay
+        <select id="bay" data-testid="bay" aria-label="Bay">
+          <option value="">Bay…</option>
+          <option value="loaded">Bay 1 — 3 waiting</option>
+          <option value="empty">Bay 2 — nothing waiting</option>
+        </select>
+      </label>
+      <div id="dispatch-slot"></div>
+    </form>
+    <p id="dispatch-result"></p>
+    <script>
+      const slot = document.getElementById('dispatch-slot');
+      document.getElementById('bay').addEventListener('change', (e) => {
+        if (e.target.value === 'loaded') {
+          slot.innerHTML =
+            '<label><input type="checkbox" id="pick" data-testid="pick" checked> Order #1042</label>' +
+            ' <button type="submit" id="dispatch-go" data-testid="dispatch-go">Dispatch</button>';
+        } else if (e.target.value === 'empty') {
+          // The submit does not become disabled — it stops EXISTING.
+          slot.innerHTML = '<p id="bay-empty" data-testid="bay-empty">Nothing waiting in this bay.</p>';
+        } else {
+          slot.innerHTML = '';
+        }
+      });
+      document.getElementById('dispatch').addEventListener('submit', (e) => {
+        e.preventDefault();
+        document.getElementById('dispatch-result').textContent = 'Dispatched from the bay.';
+      });
+    </script>`),
+  // A count box and the button it gates, with NO form around them, and the
+  // field typed as text with inputmode="numeric" — which is what a touch-first
+  // app uses, because type="number" brings a spinner and scroll-to-change that
+  // are wrong under a thumb. Synthesizing a word here left the button disabled
+  // and the walk reported it as needing something it could not supply, when a
+  // number was all it wanted (issue #42).
+  '/tally': page('Tally', `
+    <h1>Tally</h1>
+    <li>
+      <span>Bay 1</span>
+      <input id="count" data-testid="count" aria-label="Pieces counted" inputmode="numeric" value="">
+      <button type="button" id="tally-go" data-testid="tally-go" disabled>Record</button>
+    </li>
+    <p id="tally-result"></p>
+    <script>
+      const box = document.getElementById('count');
+      const go = document.getElementById('tally-go');
+      const parses = () => /^[1-9][0-9]*$/.test(box.value.trim());
+      box.addEventListener('input', () => { go.disabled = !parses(); });
+      go.addEventListener('click', () => {
+        document.getElementById('tally-result').textContent = 'Recorded ' + box.value.trim() + ' pieces.';
+      });
+    </script>`),
   '/about': page('About', `
     <h1>About</h1><p>Acme, since 1998.</p>
     <button id="more" data-testid="more-actions">More actions</button>

@@ -282,6 +282,30 @@ async function locate(page: Page, el: ElementDescriptor): Promise<Selector | nul
 }
 
 /**
+ * Whether a control is still on the page, and if so whether it is disabled.
+ *
+ * Filling a form can REMOVE the very control that was going to be submitted,
+ * and legitimately so: an app whose submit is conditionally rendered swaps it
+ * for "nothing left to do" the moment a select narrows the list to empty. The
+ * walk did that itself, one line earlier.
+ *
+ * Asking a locator that no longer resolves whether it is disabled costs a full
+ * actionability timeout and then THROWS. Unhandled, that killed the whole run
+ * — exit 1, no graph written, so a project lost its baseline and its gate in
+ * one step over a single vanished button (issue #46). Presence is checked
+ * first, with the same `count()` primitive `locate` uses, and the throw is
+ * caught as well: a race between the two reads must not be fatal either.
+ */
+async function disabledNow(page: Page, selector: Selector): Promise<boolean | 'gone'> {
+  try {
+    if ((await resolve(page, selector).count()) === 0) return 'gone';
+    return await resolve(page, selector).isDisabled({ timeout: ACTION_TIMEOUT });
+  } catch {
+    return 'gone';
+  }
+}
+
+/**
  * The caller's declaration for this field, or null to synthesize a value.
  *
  * Matching is `Element.matches` in the page, so a declared selector means
@@ -1093,7 +1117,22 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
           // supply — a captcha, a confirm-password that must match, a value the
           // server has to bless. Clicking it then proves nothing, so this is
           // where such a form gets its honest skip, with the reason attached.
-          if (await resolve(page, target).isDisabled({ timeout: ACTION_TIMEOUT })) {
+          const disabled = await disabledNow(page, target);
+          // Gone, not disabled: the fill above removed it. Reported in the
+          // vocabulary the walk already has for a control that is not there,
+          // and with the cause named, because "unreachable" on its own reads
+          // like the walk's failure rather than the app's design.
+          if (disabled === 'gone') {
+            skipped.push({
+              nodeId: state.nodeId, label: el.selector.label, reason: 'unreachable',
+              detail: filled.length > 0
+                ? `filling ${filled.length} field(s) took it off the page before it could ` +
+                  'be pressed'
+                : 'it left the page between being enumerated and being pressed',
+            });
+            continue;
+          }
+          if (disabled) {
             skipped.push({
               nodeId: state.nodeId, label: el.selector.label, reason: 'disabled',
               detail: filled.length > 0

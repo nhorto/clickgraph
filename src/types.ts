@@ -27,6 +27,16 @@ export interface ElementDescriptor {
   /** Raw `type` for inputs. `password` is what identifies a login wall. */
   inputType: string | null;
   /**
+   * Raw `inputmode`, which is how a touch-first app says "digits go here".
+   *
+   * `type="number"` brings a spinner and scroll-to-change that are wrong on a
+   * tablet, so apps built for one use `inputMode="numeric"` on a text input
+   * instead. Both mean the same thing to the person typing, and until this was
+   * read the walk saw only `type`, synthesized a word, and every control gated
+   * on the field stayed disabled (issue #42).
+   */
+  inputMode: string | null;
+  /**
    * The enclosing `<form>`, identified by its position in the page, or null.
    *
    * Grouping is what makes a form testable at all. A single field proves almost
