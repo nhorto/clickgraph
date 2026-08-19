@@ -112,11 +112,29 @@ idea worked.
 - [ ] Per-edge replay scripts: `diff` currently re-explores everything.
       Replaying the baseline's known edges deterministically is the cheap
       inner loop; exploration becomes occasional, replay runs on every change.
-- [ ] Cut the number of reloads, which is where the time actually goes.
-      Ordering the frontier so consecutive actions share a source state, or
-      walking several states at once in separate browser contexts. Reaching a
-      state by clicking through the running app, rather than reloading into it,
-      is the version of this that would help a single-page app.
+- [x] **Done for multi-page apps: re-enter a state by taking a walked edge back
+      to it** (#23). This is the "remove reloads, not reroute them" the rejected
+      attempt below asked for — a route is clicks through the running app, with
+      no page load in it at all. Interleaved A/B on the fixture with a realistic
+      500ms page load: 316s/317s reloading vs 279s/276s routing, and the gap is
+      more than ten times the run-to-run spread. On the default fixture, whose
+      pages cost nothing to serve, the same change is invisible — which is why
+      `SLOW_MS` exists and why the number to watch is reloads removed (54 of
+      102) rather than seconds.
+
+      Correctness is not argued, it is checked: `eval/equivalence.mjs` walks the
+      same app both ways and asserts the graphs match, having first proved with
+      `--control` that two identical runs match. Arrival is re-checked at every
+      routed re-entry, so an app that keeps state a reload clears falls back
+      instead of drifting.
+- [ ] The same for single-page apps, where it currently does nothing at all
+      (#44). The edges that point home are the ones not yet walked, so the known
+      graph is a tree pointing the wrong way — `/kiosk` routes 0 of 11. Using
+      the controls on the page the walk is standing on, checked on arrival the
+      way routed re-entry already checks, is the version that reaches them.
+- [ ] Cut the number of reloads further: ordering the frontier so consecutive
+      actions share a source state, or walking several states at once in
+      separate browser contexts.
 - [x] **Measured and rejected: entering a state by navigating straight to its
       URL.** The intuition was that replaying a path costs a reload plus every
       click on the way in. Interleaved A/B on a real dashboard: 175.5s replay

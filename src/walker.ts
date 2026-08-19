@@ -70,6 +70,7 @@ const DEFAULTS: Omit<WalkConfig, 'baseUrl'> = {
   /** Quiet period with no DOM mutations that counts as "the page has settled". */
   settleMs: 250,
   allowDangerous: false,
+  fastReentry: true,
   fillForms: false,
   expectedRoutes: [],
   fields: [],
@@ -489,6 +490,25 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   const fieldsUsed = new Set<string>();
   let limitHit: string | null = null;
   let actionsUsed = 0;
+  /**
+   * How re-entry was paid for, kept for the progress log only.
+   *
+   * Deliberately not written into the graph: it says how fast the walk was, not
+   * what the app does, and a baseline that carried it would report a diff every
+   * time the routing happened to differ.
+   */
+  let routed = 0;
+  let reloaded = 0;
+  /**
+   * Routes taken that did not arrive — the replay failed, or it landed on a
+   * screen that was not the one the walk came back for.
+   *
+   * Counted separately from `reloaded` because it is the number that says
+   * whether this app is one routing works on. A reload the graph knew no way
+   * around is ordinary; a route that was tried and missed is clicks spent for
+   * nothing, and many of them mean the app keeps something a reload clears.
+   */
+  let misrouted = 0;
 
   /**
    * The two corrections the coverage invariant needs, per node.
@@ -626,6 +646,71 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         const step = resolve(page, action.selector);
         // A step that is not there will not appear by waiting five seconds for
         // it, and the whole path fails either way — so fail on the count.
+        if ((await step.count()) === 0) return false;
+        await step.click({ timeout: ACTION_TIMEOUT });
+        await settle(page, config.settleMs);
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The cheapest known way from one state to another: breadth-first over the
+   * edges the walk has already taken.
+   *
+   * Only click edges are eligible, and the reason is different for each of the
+   * kinds left out. A `fill` edge submits a form, so travelling through one
+   * creates data as a side effect of going somewhere — the walk is allowed to
+   * submit a form to test it, not to commute. A `select` edge records the
+   * option's *label* rather than its value, so replaying one is a guess. And a
+   * `hover` edge only holds while the pointer stays put, which the next action
+   * moves. A click is the one action that means the same thing on the way back
+   * as it did on the way out.
+   *
+   * `limit` is what the reload costs: replaying the path is `path.length`
+   * clicks, and the reload itself is one more navigation on top of them. So a
+   * route of equal length is already the better deal — it spends a click where
+   * the reload spends a whole page load, and it leaves in-page state standing
+   * instead of destroying it. Raising the budget from `path.length` to
+   * `path.length + 1` converted eight more of the fixture's reloads into routes
+   * with none of them missing their target.
+   */
+  function routeBetween(from: string, to: string, limit: number): Action[] | null {
+    if (from === to || limit <= 0) return null;
+    const outgoing = new Map<string, UIEdge[]>();
+    for (const edge of edges) {
+      if (!edge.to || edge.to === edge.from) continue;
+      if (edge.action.kind !== 'click') continue;
+      let list = outgoing.get(edge.from);
+      if (!list) outgoing.set(edge.from, (list = []));
+      list.push(edge);
+    }
+    const seen = new Set([from]);
+    let frontier: { at: string; route: Action[] }[] = [{ at: from, route: [] }];
+    while (frontier.length > 0) {
+      const next: { at: string; route: Action[] }[] = [];
+      for (const { at, route } of frontier) {
+        if (route.length >= limit) continue;
+        for (const edge of outgoing.get(at) ?? []) {
+          const extended = [...route, edge.action];
+          if (edge.to === to) return extended;
+          if (seen.has(edge.to!)) continue;
+          seen.add(edge.to!);
+          next.push({ at: edge.to!, route: extended });
+        }
+      }
+      frontier = next;
+    }
+    return null;
+  }
+
+  /** Take a route from wherever the browser is standing now. */
+  async function replayRoute(route: Action[]): Promise<boolean> {
+    for (const action of route) {
+      try {
+        const step = resolve(page, action.selector);
         if ((await step.count()) === 0) return false;
         await step.click({ timeout: ACTION_TIMEOUT });
         await settle(page, config.settleMs);
@@ -832,17 +917,47 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // the next edge to the wrong place.
         if (!appearedIn &&
             (!atSnapshot || atSnapshot.fingerprint.structure !== state.fingerprint.structure)) {
-          if (!(await gotoPath(path))) {
-            skipped.push({
-              nodeId: state.nodeId, label: el.selector.label,
-              reason: 'not-reached',
-              detail: 'the walk could not replay its way back to this state, so the control ' +
-                'was never tried',
-            });
-            atSnapshot = null;
-            continue;
+          let arrived: PageSnapshot | null = null;
+
+          // Ride the graph back when it knows a way that beats the reload. This
+          // is where a deep walk spends most of its wall clock: without it, a
+          // state four clicks in is re-reached by a fresh load and four clicks,
+          // once for every control on it (issue #23).
+          //
+          // Arrival is checked rather than assumed, and that check is the whole
+          // safety argument. Routing and reloading are only interchangeable on
+          // an app that keeps nothing a reload would clear — so the walk asks
+          // the page where it ended up, and takes the slow way anyway when the
+          // answer is not the state it came back for. An app that accumulates
+          // pays the reload it needs; one that does not, stops paying it.
+          if (config.fastReentry && atSnapshot) {
+            const route = routeBetween(atSnapshot.nodeId, state.nodeId, path.length + 1);
+            if (route) {
+              const here = (await replayRoute(route)) ? await captureState(page) : null;
+              if (here && here.fingerprint.structure === state.fingerprint.structure) {
+                arrived = here;
+                routed++;
+              } else {
+                misrouted++;
+              }
+            }
           }
-          atSnapshot = await captureState(page);
+
+          if (!arrived) {
+            if (!(await gotoPath(path))) {
+              skipped.push({
+                nodeId: state.nodeId, label: el.selector.label,
+                reason: 'not-reached',
+                detail: 'the walk could not replay its way back to this state, so the control ' +
+                  'was never tried',
+              });
+              atSnapshot = null;
+              continue;
+            }
+            arrived = await captureState(page);
+            reloaded++;
+          }
+          atSnapshot = arrived;
         }
 
         // Everything below acts on the control, so find it first. Like the
@@ -1289,6 +1404,23 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     }
   } finally {
     await browser.close();
+  }
+
+  // Said out loud so the trade is visible in a run rather than only in a
+  // benchmark: every routed re-entry is a page load and an action replay the
+  // walk did not have to pay for, and every reload beside it is a state the
+  // graph knew no cheap way back to.
+  if (routed + reloaded > 0) {
+    log(
+      config.fastReentry
+        ? `re-entered states ${routed + reloaded} time(s): ${routed} by a known route, ` +
+          `${reloaded} by reloading` +
+          (misrouted > 0
+            ? ` (${misrouted} route(s) tried and missed — use --no-fast-reentry if that number ` +
+              'is large, this app keeps something a reload clears)'
+            : '')
+        : `re-entered states ${reloaded} time(s), all by reloading (--no-fast-reentry)`,
+    );
   }
 
   markAlreadyApplied(edges);

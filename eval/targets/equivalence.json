@@ -1,0 +1,43 @@
+{
+  "name": "fixture",
+  "cwd": ".",
+  "serve": "node fixture/server.js",
+  "readyTimeoutMs": 15000,
+  "env": { "CLUSTER": "1" },
+  "walkArgs": ["--settle", "250"],
+  "scenarios": [
+    {
+      "id": "whole-app",
+      "path": "/",
+      "description": "the whole fixture from the entry page — the deep walk the cost is in",
+      "walkArgs": ["--fill-forms", "--max-depth", "4"]
+    },
+    {
+      "id": "kiosk",
+      "path": "/kiosk",
+      "description": "six screens mounted at once, switched in memory — a reload loses what a route keeps"
+    },
+    {
+      "id": "about",
+      "path": "/about",
+      "description": "a panel revealed by a self-loop, whose controls exist only while it is open"
+    },
+    {
+      "id": "keypad",
+      "path": "/keypad",
+      "description": "a keypad that accumulates in the DOM and in no heading, so re-entry is invisible to the fingerprint"
+    },
+    {
+      "id": "release-notes",
+      "path": "/release-notes",
+      "description": "a page tall enough that every control is reached by scrolling"
+    },
+    {
+      "id": "tab-app",
+      "path": "/tab-app",
+      "description": "an app behind a tab-scoped session, walked with that session replayed",
+      "setup": "node eval/support/tab-session.mjs .uigraph/equiv-tab-session.json",
+      "walkArgs": ["--storage-state", ".uigraph/equiv-tab-session.json"]
+    }
+  ]
+}

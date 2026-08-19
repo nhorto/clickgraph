@@ -1236,6 +1236,79 @@ node -e '
 check "$?" "0" "groups exactly the fields that belong to it, and proves the button works"
 
 
+echo "U: re-entering a state by routing costs nothing in what is found (issue #23)"
+# The walk returns to a state between every control on it. It used to do that by
+# reloading the base URL and replaying the whole path; now it takes a walked edge
+# back where the graph knows one. That is only a fair trade if both ways of
+# arriving find the same app, and they part company exactly where an app keeps
+# something in memory a reload clears — so the graphs are compared here rather
+# than assumed. `eval/equivalence.mjs` does this across six apps and takes ten
+# minutes; this is the same contract at a size the suite can afford.
+#
+# Bounded with --max-actions so it stays under two minutes, but not so small
+# that no route is ever taken: at 60 the walk gets past the entry page, which is
+# where routing first becomes possible at all.
+start_fixture PORT="$PORT"
+# Deliberately not --json: how the walk re-entered each state is said in the
+# progress output, which --json turns off, and that count is what tells these
+# checks the feature ran at all. Nothing is lost — every finding is derived from
+# the graph, so two identical graphs report identical findings by construction.
+node dist/cli.js walk "$URL/" --max-depth 2 --max-actions 60 --settle 250 \
+  --no-fast-reentry --out /tmp/clickgraph-reentry-slow.json \
+  >/dev/null 2>/tmp/clickgraph-reentry-slow.log
+check "$?" "0" "a walk that reloads its way back to every state still walks cleanly"
+
+node dist/cli.js walk "$URL/" --max-depth 2 --max-actions 60 --settle 250 \
+  --fast-reentry --out /tmp/clickgraph-reentry-fast.json \
+  >/dev/null 2>/tmp/clickgraph-reentry-fast.log
+check "$?" "0" "a walk that routes its way back to every state still walks cleanly"
+
+node -e '
+  const fs = require("node:fs");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const slow = fs.readFileSync("/tmp/clickgraph-reentry-slow.log", "utf8");
+  const fast = fs.readFileSync("/tmp/clickgraph-reentry-fast.log", "utf8");
+  // The flag has to actually reach the walker. A silently ignored --no-fast-
+  // reentry would make every check below compare a run against itself and pass
+  // for the emptiest possible reason.
+  if (!/all by reloading/.test(slow)) fail("--no-fast-reentry still routed: " + slow.slice(-300));
+  const took = fast.match(/(\d+) by a known route/);
+  if (!took) fail("the routing walk never said how it re-entered: " + fast.slice(-300));
+  // A feature that stops working would otherwise sail through the comparison
+  // below, because two identical slow walks agree perfectly.
+  if (Number(took[1]) < 1)
+    fail("no state was re-entered by a route, so the comparison proves nothing");
+  // Every route the graph offered has to arrive where it was aimed. A miss is
+  // not a wrong answer — the walk falls back and reloads — but it is clicks
+  // spent for nothing, and on this fixture there is no excuse for one.
+  if (/tried and missed/.test(fast)) fail("a route missed its target: " + fast.slice(-300));
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the flag is honoured, routes are taken, and every one arrives where it was aimed"
+
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const slow = require("/tmp/clickgraph-reentry-slow.json");
+  const fast = require("/tmp/clickgraph-reentry-fast.json");
+  if (slow.config.fastReentry !== false || fast.config.fastReentry !== true)
+    fail("the graphs do not record which way they were walked");
+  const edges = (g) => g.edges
+    .map((e) => `${e.from}|${e.action.kind}|${e.action.name}|${e.to}|${e.outcome.kind}`).join("\n");
+  if (edges(slow) !== edges(fast))
+    fail("the two ways of re-entering a state disagree about what the app does");
+  const skips = (g) => JSON.stringify(g.coverage.skipped);
+  if (skips(slow) !== skips(fast))
+    fail("the two ways of re-entering a state disagree about what was skipped");
+  const totals = (g) => [g.coverage.statesFound, g.coverage.edgesWalked, g.coverage.edgesUnwalked,
+    (g.coverage.accountingGaps ?? []).length].join(",");
+  if (totals(slow) !== totals(fast))
+    fail(`coverage differs: ${totals(slow)} vs ${totals(fast)}`);
+  const nodes = (g) => Object.values(g.nodes)
+    .map((n) => `${n.id}|${n.fingerprint.structure}|${n.interactiveCount}`).sort().join("\n");
+  if (nodes(slow) !== nodes(fast))
+    fail("the two ways of re-entering a state found different screens");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "same states, same edges, same skips, same coverage, whichever way it got there"
+
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
 [ "$fail" -eq 0 ]
