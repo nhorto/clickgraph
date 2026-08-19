@@ -25,6 +25,12 @@ friction rank the rest of this file.
       never be verified by clicking. Both fixed.
 - [ ] Dogfood continuously: the next real UI feature built by an agent ends
       with a clickgraph diff; every friction point becomes a tracked issue
+- [x] Measurement harnesses in `eval/` (see eval/README.md): replaying a
+      target repo's merge history puts a number on the noise floor — the
+      cry-wolf failure mode — because history is real but almost never broken;
+      planted mutations with known answers put one on detection, because
+      "caught N of M" is only measurable when the bugs are labeled. Findings
+      become issues; the run cadence is in the doc.
 
 ## Phase 2 — past the login screen
 

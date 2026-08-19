@@ -14,3 +14,8 @@ session.json
 
 # App Atlas keeps its map here. Local to this machine.
 .app-atlas/
+
+# Eval harness scratch space (clones of target repos) and per-run results.
+# Results worth keeping get promoted into an issue or eval/README.md by hand.
+eval/.work/
+eval/results/

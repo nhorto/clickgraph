@@ -1,0 +1,50 @@
+{
+  "name": "fixture",
+  "cwd": ".",
+  "url": "http://localhost:4173",
+  "serve": "node fixture/server.js",
+  "readyTimeoutMs": 15000,
+  "walkArgs": [],
+  "mutations": [
+    {
+      "id": "refresh-dead",
+      "description": "Unwire the working Refresh button (listener bound to a bogus event)",
+      "file": "fixture/server.js",
+      "find": "document.getElementById('refresh').addEventListener('click', async () => {",
+      "replace": "document.getElementById('refresh').addEventListener('noop', async () => {",
+      "expect": { "match": "Refresh" }
+    },
+    {
+      "id": "zoom-dead",
+      "description": "Unwire Zoom In, whose only effect is visual (transform scale)",
+      "file": "fixture/server.js",
+      "find": "document.getElementById('zoom-in').addEventListener('click', () => {",
+      "replace": "document.getElementById('zoom-in').addEventListener('noop', () => {",
+      "expect": { "match": "Zoom" }
+    },
+    {
+      "id": "status-filter-dead",
+      "description": "Unwire the working status filter select — it renders options and ignores the choice",
+      "file": "fixture/server.js",
+      "find": "document.getElementById('status-filter').addEventListener('change', (e) => {",
+      "replace": "document.getElementById('status-filter').addEventListener('noop', (e) => {",
+      "expect": { "match": "status" }
+    },
+    {
+      "id": "orders-api-gone",
+      "description": "Remove the /api/orders endpoint (now 404s). Sync orders swallows the failure — that swallow is the expected finding; Refresh and Reload handle it and must NOT be flagged",
+      "file": "fixture/server.js",
+      "find": "if (path === '/api/orders') {",
+      "replace": "if (false && path === '/api/orders') {",
+      "expect": { "match": "Sync" }
+    },
+    {
+      "id": "order-link-inert",
+      "description": "The order-detail link keeps its href but preventDefaults the click (same regression BREAK=1 plants)",
+      "file": "fixture/server.js",
+      "find": "data-testid=\"order-link\"${BREAK ? ' onclick=\"return false\"' : ''}",
+      "replace": "data-testid=\"order-link\" onclick=\"return false\"",
+      "expect": { "match": "1042" }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "self-fixture",
+  "repo": ".",
+  "branch": "main",
+  "url": "http://localhost:4173",
+  "serve": "node fixture/server.js",
+  "pairs": 13,
+  "readyTimeoutMs": 15000,
+  "walkArgs": []
+}
