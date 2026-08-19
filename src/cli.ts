@@ -27,6 +27,7 @@ interface Args {
   maxDepth?: number;
   settleMs?: number;
   allowDangerous?: boolean;
+  fastReentry?: boolean;
   fillForms?: boolean;
   pre?: string;
   storageState?: string;
@@ -56,6 +57,8 @@ function parseArgs(argv: string[]): Args {
     else if (arg === '--no-allow-dangerous') args.allowDangerous = false;
     else if (arg === '--fill-forms') args.fillForms = true;
     else if (arg === '--no-fill-forms') args.fillForms = false;
+    else if (arg === '--fast-reentry') args.fastReentry = true;
+    else if (arg === '--no-fast-reentry') args.fastReentry = false;
     else if (arg === '--pre') args.pre = rest[++i];
     else if (arg === '--out' || arg === '--baseline') args.out = rest[++i];
     else if (arg === '--max-states') args.maxStates = Number(rest[++i]);
@@ -129,6 +132,14 @@ Options
                         successfully writes real data. Without it a form is
                         reported as skipped, never as working
   --no-fill-forms       override a diff baseline that enabled form filling
+  --no-fast-reentry     return to a known state by reloading the base URL and
+                        replaying every click to it, instead of taking a walked
+                        edge back. Slower — usually much slower on a deep app —
+                        and the safe answer if the walk keeps landing somewhere
+                        it did not mean to, which happens where the app holds
+                        state in memory that a reload clears
+  --fast-reentry        the default; here to override a baseline that turned it
+                        off
   --fail-requests <spec>
                         fail matching requests for the whole walk, so error
                         banners, retry buttons and offline states become
@@ -213,6 +224,14 @@ function optionsFor(args: Args, baseline?: WalkConfig): WalkOptions {
     maxDepth: inherited(args.maxDepth, baseline?.maxDepth),
     settleMs: inherited(args.settleMs, baseline?.settleMs),
     allowDangerous: args.allowDangerous,
+    // Inherited, and deliberately absent from `configWarnings` below. Routing
+    // back to a state instead of reloading is supposed to find the same graph —
+    // that is the contract `eval/equivalence.mjs` holds it to — so a mismatch is
+    // not a reason to distrust a diff. It is inherited anyway, because someone
+    // who turned it off did so on an app where the contract does not hold, and
+    // a diff that quietly turned it back on would walk that app the way they
+    // had already found to be wrong.
+    fastReentry: inherited(args.fastReentry, baseline?.fastReentry),
     fillForms: inherited(args.fillForms, baseline?.fillForms),
     storageState: inherited(args.storageState, baseline?.storageState),
     expectedRoutes: inherited(args.expectedRoutes, baseline?.expectedRoutes),

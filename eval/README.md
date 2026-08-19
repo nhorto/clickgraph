@@ -10,6 +10,7 @@ a different thing, none a substitute for the others:
 | 1. History replay | `replay.mjs` | **Specificity** — the noise floor | History is real but unlabeled; almost every merge is a change that did *not* break the UI, so any regression flagged on one is probably noise |
 | 2. Mutation | `mutate.mjs` | **Sensitivity** — detection gaps | Planted bugs have known answers, so "caught N of M" is a real number; history can never give you that |
 | 3. Live dogfood | (no harness) | The **agent loop** — skill, verdict, UX | An agent building a feature with the skill installed; ROADMAP Phase 1. Tracks 1–2 test detection and never test this |
+| 4. Equivalence | `equivalence.mjs` | **Self-consistency** — that a cheaper walk is the same walk | Tracks 1–2 compare clickgraph against an app. This compares clickgraph against itself, which is the only way to buy speed without quietly paying in correctness |
 
 Every run needs a build first: `npm run build` at the repo root.
 
@@ -94,10 +95,65 @@ planted bugs in a real app's DOM are worth more than the same bugs in the
 fixture, because real DOM is where the last ten false-positive classes came
 from.
 
+## Track 4 — fast-vs-slow equivalence (`equivalence.mjs`)
+
+```bash
+node eval/equivalence.mjs --control                 # run this FIRST, see below
+node eval/equivalence.mjs                           # slow vs fast
+node eval/equivalence.mjs --only kiosk              # one scenario
+PORT=4179 node eval/equivalence.mjs                 # move off 4177
+```
+
+Walks the same app twice and asserts the two graphs are the same. It exists
+for issue #23: the walk re-enters a known state by taking a walked edge back
+to it rather than reloading the base URL and replaying every click, and those
+two ways of arriving are **only** interchangeable on an app that keeps nothing
+in memory a reload would clear. That is not most apps, and it is emphatically
+not the apps this tool is for — so the speed-up is worth nothing without a
+check that can fail.
+
+What is compared: nodes (id, url, title, structure, control count, recorded
+path), edges (from, action, destination, outcome — as a multiset *and* in
+order), every skip with its reason and detail, and the coverage totals. What
+is excluded: the walk timestamp, and the config that names the mode. Nothing
+else, because an equivalence check that narrows its own scope proves whatever
+it was narrowed to.
+
+**Run `--control` first.** It runs the *same* configuration on both sides, so
+anything it reports is walk nondeterminism rather than a routing bug. That
+number is the floor under every other result here: a comparator that cannot
+tell two identical runs apart has no standing to testify about two different
+ones. A control run that diverges is the thing to fix first.
+
+Scenarios live in `eval/targets/equivalence.json`, and the interesting ones
+are chosen for what they can break rather than for coverage:
+
+- **kiosk** — six screens mounted at once and switched in memory. A reload
+  loses what a route keeps; if routing is unsound anywhere, it is here.
+- **about** — a panel opened by a self-loop, whose controls exist only while
+  it is open, so re-entry timing is observable.
+- **keypad** — accumulates state in the DOM and in no heading, so the
+  fingerprint the arrival check uses cannot see it.
+- **tab-app** — walked with a real session replayed, so one scenario has a
+  session to lose.
+- **whole-app** — the deep walk with `--fill-forms`, which is where the cost
+  being traded actually lives.
+
+Each side gets its own freshly started server, so accumulated server state
+cannot be mistaken for a routing difference. Exit is non-zero if any scenario
+diverges or fails to run.
+
+**Port 4177**, deliberately not the 4173 that `replay.mjs` and
+`scripts/verify.sh` both use — those two already kill each other's fixtures,
+and this harness runs long enough to be tempting to start alongside one.
+
 ## The cadence
 
 - **After any detection change** (walker, observer, fingerprint, graph diff):
   run the fixture mutations. They are the sensitivity regression test.
+- **After any change to how the walk moves** (re-entry, routing, budgets, the
+  frontier): run equivalence, control first. A change that makes the walk
+  cheaper is a change to what it finds until that says otherwise.
 - **Before a release / after a big refactor**: run replay on every target.
   Compare the flag rate with the last run's; a rising flag rate is a
   regression in clickgraph even if every individual flag looks defensible.
@@ -117,6 +173,8 @@ run can be left alone and read later:
 npm run build
 node eval/mutate.mjs eval/mutations/fixture.json 2>&1 | tee eval/results/mutate.log
 node eval/replay.mjs eval/targets/self.json      2>&1 | tee eval/results/replay.log
+node eval/equivalence.mjs --control              2>&1 | tee eval/results/control.log
+node eval/equivalence.mjs                        2>&1 | tee eval/results/equivalence.log
 ```
 
 On macOS, prefix the long command with `caffeinate -i` so the machine does

@@ -281,6 +281,21 @@ export interface WalkConfig {
   settleMs: number;
   allowDangerous: boolean;
   /**
+   * Re-enter a known state by taking a walked edge to it, instead of reloading
+   * the base URL and replaying its whole action path (issue #23).
+   *
+   * On by default, because the replay is most of a deep walk's wall clock: a
+   * state four clicks in is re-reached by four clicks, once per control on it.
+   *
+   * The two ways of arriving are only interchangeable where the app keeps
+   * nothing a reload would clear, so arrival is verified against the state's
+   * structure fingerprint every time and the reload is used anyway when it does
+   * not match. `eval/equivalence.mjs` is the standing check that the two find
+   * the same graph; turn this off to walk the way the tool did before it, or to
+   * attribute a difference between two walks.
+   */
+  fastReentry: boolean;
+  /**
    * Fill each form with synthetic values and submit it, instead of leaving the
    * form untested. Off by default because a successful submission writes real
    * data — the same reasoning that keeps destructive controls unclicked.

@@ -58,6 +58,11 @@
  * Run with BREAK=1 to simulate a regression: the working "Refresh" button
  * loses its handler and the order-detail link stops navigating.
  *
+ * Run with SLOW_MS=500 to delay every page load by half a second, which is what
+ * a real app's pages cost and what this fixture's cost nothing. Anything that
+ * trades page loads away — routed re-entry, issue #23 — is invisible on the
+ * default fixture and measurable under this.
+ *
  * Run with EMPTY=1 to omit the only order row from /orders while keeping the
  * /orders/1042 page available by direct address. This simulates an app whose
  * fixture data is missing, making a real screen undiscoverable to the walker.
@@ -698,6 +703,22 @@ const routes = {
 </body></html>`,
 };
 
+/**
+ * Delay every HTML response by this many milliseconds.
+ *
+ * The fixture serves pages from strings already in memory, so a page load here
+ * costs almost nothing — which makes it the wrong instrument for anything that
+ * trades page loads away. Routed re-entry (issue #23) removes about half of a
+ * walk's reloads and moves this fixture's wall clock by less than the run-to-
+ * run noise, because half of nearly nothing is nearly nothing. On an app whose
+ * pages take a few hundred milliseconds, which is every real one, the same
+ * removal is the whole point.
+ *
+ * So this exists to put a real page load's cost back in, and make that claim
+ * something to measure rather than something to argue about.
+ */
+const SLOW_MS = Number(process.env.SLOW_MS ?? 0);
+
 createServer((req, res) => {
   const path = req.url.split('?')[0];
 
@@ -728,7 +749,14 @@ createServer((req, res) => {
     return res.end(page('Not found', '<h1>404</h1>'));
   }
   res.writeHead(200, { 'content-type': 'text/html' });
+  // Only the document is delayed, not the JSON endpoints: this stands in for
+  // the cost of a page load, and delaying the API calls too would slow the
+  // clicks as well and hide the very thing being measured.
+  if (SLOW_MS > 0) return setTimeout(() => res.end(body), SLOW_MS);
   res.end(body);
 }).listen(PORT, () => {
-  console.log(`fixture app on http://localhost:${PORT}${BREAK ? ' (BREAK=1)' : ''}`);
+  console.log(
+    `fixture app on http://localhost:${PORT}${BREAK ? ' (BREAK=1)' : ''}` +
+    `${SLOW_MS > 0 ? ` (SLOW_MS=${SLOW_MS})` : ''}`,
+  );
 });
