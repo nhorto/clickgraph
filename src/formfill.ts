@@ -104,6 +104,13 @@ export function fieldSpec(field: DeclaredField): string {
  */
 export function synthesize(el: ElementDescriptor): string {
   if (el.tag === 'textarea') return `${FILL_TOKEN} — submitted by an automated UI walk`;
+  // Before the switch, because it applies to a field whose `type` is plain
+  // text: `inputmode` is how an app that cannot use type="number" — the
+  // spinner and scroll-to-change are wrong on a tablet — still says the field
+  // takes digits. Typing a word into one leaves every control gated on it
+  // disabled, and the walk then reports the control as needing "something the
+  // walk cannot supply" when a number was all it wanted (issue #42).
+  if (el.inputMode === 'numeric' || el.inputMode === 'decimal') return '1';
   switch (el.inputType) {
     case 'email':
       return `${FILL_TOKEN}@example.invalid`;

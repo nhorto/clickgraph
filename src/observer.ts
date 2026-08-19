@@ -335,6 +335,10 @@ function extractPageData() {
       // password identifies a login wall, and the rest decide what a future
       // walker would be allowed to type into a field.
       inputType: tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : null,
+      // Read for the same reason as `type`, and separately: an app may set
+      // either, both, or neither, and `inputmode` is the one a touch-first app
+      // reaches for.
+      inputMode: (el.getAttribute('inputmode') || '').toLowerCase() || null,
       formId:
         forms.indexOf(formOf(el)) >= 0
           ? `form-${forms.indexOf(formOf(el))}`

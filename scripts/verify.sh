@@ -23,6 +23,8 @@
 #      past a sign-in screen no storage state could open
 #   Q  a state whose only door is a typed value is walked when one is declared,
 #      and a declaration that lands nowhere fails the run instead of passing
+#   V  a control the walk's own form fill removes is a skip, not a dead run
+#   W  a digits-only field declared with inputmode is filled with digits
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1308,6 +1310,74 @@ node -e '
     fail("the two ways of re-entering a state found different screens");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "same states, same edges, same skips, same coverage, whichever way it got there"
+echo "V: a control the walk's own fill removes is a skip, not a dead run"
+# /dispatch has a submit that is conditionally RENDERED, not merely disabled:
+# choosing the empty bay swaps the whole block for a sentence. Filling the form
+# drives that select, so the walk removes the very button it was about to
+# press. Legitimate app behaviour, and it used to abort the entire run — a
+# locator that no longer resolves costs a full actionability timeout and then
+# throws, so the process exited 2 having written no graph at all. Losing a
+# baseline and a gate over one vanished button is worse than any finding
+# (issue #46).
+node dist/cli.js walk "$URL/dispatch" --quiet --fill-forms --max-depth 1 \
+  --out /tmp/clickgraph-vanishing.json >/tmp/clickgraph-vanishing.txt 2>&1
+check "$?" "0" "a submit that the fill removes does not take the run down with it"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const g = require("/tmp/clickgraph-vanishing.json");
+
+  // Exit 0 alone would also be satisfied by swallowing the control silently,
+  // which is the other way to get this wrong: the run has to SAY the button
+  // went unpressed, in the vocabulary it already uses for a control that is
+  // not there.
+  const gone = g.coverage.skipped.find((s) => /Dispatch/.test(s.label));
+  if (!gone) fail("the vanished submit is missing from skipped[] — it was swallowed, not reported");
+  if (gone.reason !== "unreachable")
+    fail(`reported as ${gone.reason}, but it is not there at all, so it is unreachable`);
+
+  // "disabled" would be the wrong word and the wrong diagnosis: the button was
+  // never disabled, it stopped existing. A reader chasing a disabled submit
+  // looks for a validation rule that is not there.
+  if (!/took it off the page/.test(gone.detail ?? ""))
+    fail(`the detail does not name the cause: ${JSON.stringify(gone.detail)}`);
+
+  // And the walk kept going afterwards rather than limping to the end.
+  if (g.coverage.statesFound < 2) fail("the walk stopped at the page that lost its button");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and it is reported as unreachable, with the fill named as the cause"
+
+
+echo "W: a digits-only field declared with inputmode is filled with digits"
+# /tally is a count box and the button it gates, with no form around them. The
+# field is type="text" with inputmode="numeric" — what a touch-first app uses,
+# because type="number" brings a spinner and scroll-to-change that are wrong
+# under a thumb. Reading only `type`, the walk typed a word, the button stayed
+# disabled, and it was reported as needing something the walk could not
+# supply — when a number was all it wanted (issue #42).
+node dist/cli.js walk "$URL/tally" --quiet --fill-forms --max-depth 1 \
+  --out /tmp/clickgraph-inputmode.json >/tmp/clickgraph-inputmode.txt 2>&1
+check "$?" "0" "a walk of a digits-only cluster succeeds"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const g = require("/tmp/clickgraph-inputmode.json");
+
+  const pressed = g.edges.find((e) => /Record/.test(e.action?.selector?.label ?? ""));
+  if (!pressed) {
+    const skip = g.coverage.skipped.find((s) => /Record/.test(s.label));
+    fail(`the gated button was never pressed: ${skip ? skip.reason + " — " + skip.detail : "not reported at all"}`);
+  }
+  // Pressed is not enough: a button clicked while still disabled changes
+  // nothing and would read as dead. The point is that filling ENABLED it.
+  if (pressed.outcome.kind === "no-effect")
+    fail("the button was pressed but nothing happened, so the value did not satisfy it");
+
+  // And the value really was digits, not a word that happened to be accepted.
+  const typed = (pressed.action.fill ?? []).map((f) => f.value);
+  if (!typed.some((v) => /^[0-9]+$/.test(v)))
+    fail(`the field was filled with ${JSON.stringify(typed)}, which is not a number`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and the button it gates is pressed, and works"
+
 
 echo ""
 echo "PASSED: $pass   FAILED: $fail"
