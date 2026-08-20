@@ -63,6 +63,13 @@
  * trades page loads away — routed re-entry, issue #23 — is invisible on the
  * default fixture and measurable under this.
  *
+ *  18. /depot — a select that opens a screen, which is the only shape that
+ *      puts a `select` step into a state's path. Replaying that path by
+ *      clicking the select chooses nothing and lands on the unfiltered screen,
+ *      and nothing checked where it landed (issue #43). The dead "Print
+ *      manifest" sits second on the bay screen on purpose: reaching it costs a
+ *      re-entry, so a run that replays wrong cannot report it correctly.
+ *
  * Run with REWORD=1 to reword every cell of /inventory's table and change
  * nothing else — no control added, removed or relabelled, no heading touched.
  * This is the shape `diff` used to call "No change" (issue #48): the screen a
@@ -94,6 +101,22 @@ const EMPTY = process.env.EMPTY === '1';
 const AUTH = process.env.AUTH === '1';
 const CLUSTER = process.env.CLUSTER === '1';
 const REWORD = process.env.REWORD === '1';
+const DRIFT = process.env.DRIFT === '1';
+/**
+ * Whether a bay has been chosen at /depot yet, for DRIFT only.
+ *
+ * Server-side because a reload is exactly what clears client state, and the
+ * thing being modelled has to survive one: a path that led somewhere when the
+ * state was found and leads elsewhere when the walk replays it.
+ *
+ * Keyed on the CHOICE, not on how many times the page was served, and that
+ * distinction was learned by getting it wrong. The walk loads the entry page
+ * more than once before it picks an option, so a serve counter drifted the
+ * page before the state was ever discovered — and the walk then found "Bay
+ * unavailable", agreed with itself perfectly, and proved nothing. Discovery
+ * has to succeed for a re-entry to have something to miss.
+ */
+let depotChosen = false;
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -219,6 +242,21 @@ const bare = (title, body) => `<!doctype html>
 </head><body>
 ${body}
 </body></html>`;
+
+/**
+ * The two shapes /depot's Bay A can take, as source for the page's own script.
+ *
+ * Lifted out of the template because they are chosen between inside it, and a
+ * template literal nested in its own interpolation is a syntax error waiting
+ * for whoever edits it next.
+ */
+const DEPOT_BAY_A =
+  `'<h2>Bay A</h2><p>Two pallets awaiting count.</p>' +
+   '<button id="log-count" data-testid="log-count">Log a count</button>' +
+   '<button id="print-manifest" data-testid="print-manifest">Print manifest</button>' +
+   '<p id="count-result"></p>'`;
+/** What the same bay becomes once DRIFT has served the page a second time. */
+const DEPOT_BAY_A_DRIFTED = `'<h2>Bay unavailable</h2><p>This bay was reassigned.</p>'`;
 
 const routes = {
   '/': page('Home', `
@@ -732,6 +770,83 @@ const routes = {
       // "Share release notes" is intentionally wired to nothing at all.
     </script>`),
   /*
+   * The screen of issue #43: a state whose only door is a chosen option.
+   *
+   * Every other select in this fixture either changes nothing (the planted
+   * dead filter) or holds a value for a submit to consume. Neither puts a
+   * `select` step into a node's PATH, which is the one shape that exposes how
+   * a path is replayed — so the bug lived in `gotoPath` unreproduced, found by
+   * reading the code rather than by walking anything.
+   *
+   * Choosing a bay opens a screen with two controls on it, and two is the
+   * whole point: the walk exercises the first, and must then travel back here
+   * to reach the second. That return replays the path, and the path is one
+   * select. Replayed by clicking — which is what every step used to get — the
+   * select opens, chooses nothing, and the walk lands on the unfiltered screen
+   * while believing it is on the bay screen.
+   *
+   * The select deliberately stays on the page after a bay is chosen. A door
+   * that vanishes behind you cannot be replayed at all, which is a different
+   * bug with a different fix; this one is about a door that is still there and
+   * still not opened.
+   *
+   * "Print manifest" is wired to nothing, and it is the SECOND control for a
+   * reason: it is only reachable across a re-entry. A run that gets the replay
+   * wrong reports it as unreachable or files it against the wrong state — and
+   * a fixture whose dead control sat first would be walked before any re-entry
+   * happened and would pass either way.
+   *
+   * "Log a count" removing itself is load-bearing for the same reason, and it
+   * was learned the hard way: the first version of this route left the screen's
+   * shape alone, so the walk never left the bay screen, never replayed
+   * anything, and produced byte-identical output with the bug present and
+   * absent. A control only forces a re-entry by changing the shape of the state
+   * it is on — which is also why the check below asserts a re-entry happened at
+   * all rather than only asserting the finding.
+   */
+  '/depot': () => bare('Depot', `
+    <h1>Depot</h1>
+    <label>Bay
+      <select id="bay" data-testid="bay-select" aria-label="Choose a bay">
+        <option value="">Choose a bay</option>
+        <option value="a">Bay A</option>
+        <option value="b">Bay B</option>
+      </select>
+    </label>
+    <div id="bay-screen"></div>
+    <script>
+      const SCREENS = {
+        // "Log a count" consumes itself, and that is what forces the re-entry
+        // this route exists to test. A button that leaves the screen's shape
+        // alone lets the walk stay put and reach the next control without
+        // replaying anything — which is how the first version of this fixture
+        // passed against the bug it was written to catch.
+        a: ${DRIFT && depotChosen ? DEPOT_BAY_A_DRIFTED : DEPOT_BAY_A},
+        b: '<h2>Bay B</h2><p>Nothing awaiting count.</p>' +
+           '<button id="bay-b-back" data-testid="bay-b-back">Back to all bays</button>',
+      };
+      const screen = document.getElementById('bay-screen');
+      document.getElementById('bay').addEventListener('change', (e) => {
+        screen.innerHTML = SCREENS[e.target.value] ?? '';
+        ${DRIFT ? `if (e.target.value) fetch('/depot/chose');` : ''}
+        const log = document.getElementById('log-count');
+        if (log) {
+          log.addEventListener('click', () => {
+            document.getElementById('count-result').textContent = 'Counted pallet 1 of 2.';
+            log.remove();
+          });
+        }
+        const back = document.getElementById('bay-b-back');
+        if (back) {
+          back.addEventListener('click', () => {
+            document.getElementById('bay').value = '';
+            screen.innerHTML = '';
+          });
+        }
+        // "Print manifest" is intentionally wired to nothing at all.
+      });
+    </script>`),
+  /*
    * The screen of issue #48: everything a walk can hold on to stays exactly
    * where it was, and every word on it changes.
    *
@@ -870,11 +985,24 @@ createServer((req, res) => {
     return res.end('{"error":"could not persist settings"}');
   }
 
-  const body = routes[path];
-  if (!body) {
+  // DRIFT only: the page says a bay has been looked at, and every later serve
+  // reassigns it. Emitted by the page's own script, so nothing here has to
+  // guess how many loads the walk spends before it chooses.
+  if (path === '/depot/chose') {
+    depotChosen = true;
+    res.writeHead(204);
+    return res.end();
+  }
+  const route = routes[path];
+  if (!route) {
     res.writeHead(404, { 'content-type': 'text/html' });
     return res.end(page('Not found', '<h1>404</h1>'));
   }
+  // A route is a string, or a function of the request when the page has to
+  // differ between two serves of the same URL. Only /depot needs the second
+  // form, and only under DRIFT — every other route is built once at startup
+  // and stays that way, which is what keeps the fixture deterministic.
+  const body = typeof route === 'function' ? route() : route;
   res.writeHead(200, { 'content-type': 'text/html' });
   // Only the document is delayed, not the JSON endpoints: this stands in for
   // the cost of a page load, and delaying the API calls too would slow the
