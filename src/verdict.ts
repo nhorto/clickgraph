@@ -72,6 +72,12 @@ export interface DiffVerdict {
   tool: 'clickgraph';
   version: string;
   baselineVersion: string | null;
+  /**
+   * The budget the BASELINE walk stopped at, if it stopped at one. The current
+   * walk's is already in `coverage.limitHit`; this is its other half, and
+   * without it a reader cannot tell which side of the comparison was short.
+   */
+  baselineLimitHit?: string | null;
   versionWarning: string | null;
   command: 'diff';
   url: string;
@@ -255,6 +261,20 @@ export function diffVerdict(
     verdict = `no regressions; ${diff.changes.length} non-breaking change(s)`;
   }
 
+  // A saturated walk qualifies every sentence above, so it is said in the same
+  // sentence rather than left in a coverage field the reader has to think to
+  // check. Both halves matter: "no change" from a walk that stopped early is
+  // the misleading one, and a list of findings from one is a list that can
+  // move between runs for reasons the app had no part in (issue #50).
+  const unreached = diff.changes.filter((ch) => ch.kind === 'unreached-edge').length;
+  if (diff.currentLimitHit) {
+    verdict += ` — this walk stopped at ${diff.currentLimitHit}, so it did not cover the whole app`;
+    if (unreached > 0) {
+      verdict += `; ${unreached} control(s) walked in the baseline were not reached this run` +
+        ' and are reported as unreached rather than gone';
+    }
+  }
+
   return {
     tool: 'clickgraph',
     version: diff.currentClickgraphVersion ?? 'unknown',
@@ -267,6 +287,7 @@ export function diffVerdict(
     url: current.baseUrl,
     baselineWalkedAt: diff.baselineWalkedAt,
     currentWalkedAt: diff.currentWalkedAt,
+    baselineLimitHit: diff.baselineLimitHit ?? null,
     ok: regressions.length === 0 && unreachedRoutes.length === 0 && unusedFields.length === 0,
     verdict,
     regressions: regressions.map((ch) => ({

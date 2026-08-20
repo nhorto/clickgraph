@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Action, Change, Fingerprint, GraphDiff, UIEdge, UIGraph, OutcomeKind } from './types.js';
+import type {
+  Action, Change, Fingerprint, GraphDiff, SkippedElement, UIEdge, UIGraph, OutcomeKind,
+} from './types.js';
 import { normalizeText } from './fingerprint.js';
 
 export const DEFAULT_GRAPH_PATH = '.uigraph/graph.json';
@@ -40,6 +42,26 @@ function contentChanged(base: Fingerprint, curr: Fingerprint): boolean {
   if (base.content === undefined || curr.content === undefined) return false;
   return base.content !== curr.content;
 }
+
+const skipKey = (nodeId: string, label: string) => `${nodeId}::${label}`;
+
+/** Every budget a walk ran into, as one phrase, or null if it ran into none. */
+function limitsOf(graph: UIGraph): string | null {
+  const all = graph.coverage.limitsHit ?? (graph.coverage.limitHit ? [graph.coverage.limitHit] : []);
+  return all.length > 0 ? all.join(' and ') : null;
+}
+
+/**
+ * The skip reasons that mean "the walk ran out", as opposed to "the walker
+ * declined" or "the app changed".
+ *
+ * The split is what decides whether a control missing from this run is news.
+ * These three say nothing about the app at all — they are a budget, a depth
+ * limit, or a frontier the walk never got to — so a control that was walked
+ * before and carries one of them now is a gap in coverage, not a regression.
+ * Every other reason is a fact about the control, and worth reporting.
+ */
+const RAN_OUT: SkippedElement['reason'][] = ['budget', 'not-reached', 'frontier-exhausted'];
 
 const WORKING: OutcomeKind[] = ['navigated', 'state-changed', 'network-only'];
 const BROKEN_KINDS: OutcomeKind[] = ['no-effect', 'error'];
@@ -88,6 +110,19 @@ function describe(edge: UIEdge, graph: UIGraph): string {
 
 export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
   const changes: Change[] = [];
+
+  // Every control the current walk enumerated and did not walk, by where it was
+  // and what it is called. Keyed on the selector's own label rather than
+  // `actionLabel`, which decorates a fill with its field count and a select
+  // with its chosen option — neither of which a skip records.
+  const currSkips = new Map(
+    (current.coverage.skipped ?? []).map((sk) => [skipKey(sk.nodeId, sk.label), sk]),
+  );
+  /** Whether the current walk enumerated this control and simply ran out. */
+  const ranOutOn = (nodeId: string, label: string) => {
+    const sk = currSkips.get(skipKey(nodeId, label));
+    return sk !== undefined && RAN_OUT.includes(sk.reason);
+  };
 
   // --- entry-page health ---
   // Errors that appear on load are a regression even if every control still
@@ -184,12 +219,29 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
   const missingStates = new Map<string, Change>();
   for (const id of Object.keys(baseline.nodes)) {
     if (!current.nodes[id]) {
-      const change: Change = {
-        kind: 'missing-state',
-        severity: 'regression',
-        summary: `state no longer reachable: ${baseline.nodes[id].fingerprint.route}`,
-        detail: `was reached via ${baseline.nodes[id].path.length} action(s); either the screen changed shape or the path into it broke`,
-      };
+      // A state absent because the door into it was never opened is the
+      // state-level version of the same mistake, and the more expensive one:
+      // it is a regression rather than a note, and it drags every control
+      // inside it along as fallout. If a baseline edge leading here has its
+      // control sitting in the current walk's budget skips, the walk did not
+      // find the screen gone — it never knocked (issue #50).
+      const doorUnopened = baseline.edges.some(
+        (e) => e.to === id && ranOutOn(e.from, e.action.selector.label),
+      );
+      const change: Change = doorUnopened
+        ? {
+            kind: 'unreached-state',
+            severity: 'info',
+            summary: `not reached this run (budget): ${baseline.nodes[id].fingerprint.route}`,
+            detail: 'the control leading to it was enumerated and not walked, so this run never ' +
+              'went in — raise the budget before reading it as a screen that has gone',
+          }
+        : {
+            kind: 'missing-state',
+            severity: 'regression',
+            summary: `state no longer reachable: ${baseline.nodes[id].fingerprint.route}`,
+            detail: `was reached via ${baseline.nodes[id].path.length} action(s); either the screen changed shape or the path into it broke`,
+          };
       missingStates.set(id, change);
       changes.push(change);
     }
@@ -263,6 +315,45 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
       stranded.set(base.from, (stranded.get(base.from) ?? 0) + 1);
       continue;
     }
+    // Absent from the edges is not the same as absent from the app, and the
+    // current walk already knows which: a control it enumerated and did not
+    // get to is in `skipped`, with the reason it did not. That the control was
+    // enumerated at all is proof it is still on the page — so "gone" was never
+    // an available answer for these, and it was the answer they got.
+    //
+    // The cost of not asking was worse than a wrong word. Two controls added
+    // to one screen push unrelated ones off the end of the budget on a screen
+    // two clicks away, so a diff reports regressions on screens the change
+    // never touched, stably and repeatably, with the one real finding buried
+    // among them (issue #50). Same shape as the flags-differ warning from #4:
+    // the conditions of the walk changed and it read as the app changing.
+    const notWalked = currSkips.get(skipKey(base.from, base.action.selector.label));
+    if (notWalked && RAN_OUT.includes(notWalked.reason)) {
+      changes.push({
+        kind: 'unreached-edge',
+        severity: 'info',
+        summary: `not reached this run (${notWalked.reason}): ${describe(base, baseline)}`,
+        detail: notWalked.detail
+          ? `${notWalked.detail} — it is still on the page, so this is the walk running out, ` +
+            'not the control going away'
+          : 'the control is still on the page; this walk did not get to it',
+      });
+      continue;
+    }
+    // Present and deliberately left alone is a third thing again, and it is
+    // about the app rather than the budget: a control that was walked before
+    // and is now disabled, or now looks dangerous, has changed. Still a
+    // regression, but "not present now" would be a false sentence about a
+    // control the walk just finished looking at.
+    if (notWalked) {
+      changes.push({
+        kind: 'missing-edge',
+        severity: 'regression',
+        summary: `control no longer walked: ${describe(base, baseline)} — now skipped (${notWalked.reason})`,
+        detail: notWalked.detail ?? 'it was walked in the baseline and was skipped this time',
+      });
+      continue;
+    }
     changes.push({
       kind: 'missing-edge',
       severity: 'regression',
@@ -282,6 +373,12 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
     currentClickgraphVersion: current.clickgraphVersion,
     currentUnreachedRoutes: current.coverage.unreachedRoutes ?? [],
     currentUnusedFields: current.coverage.unusedFields ?? [],
+    // Every limit, not the first — a diff that explains an evicted control by
+    // naming a budget which had nothing to do with it sends the reader to raise
+    // the wrong number (issue #50). Falls back to the single field for graphs
+    // written before both were kept.
+    baselineLimitHit: limitsOf(baseline),
+    currentLimitHit: limitsOf(current),
     changes,
   };
 }

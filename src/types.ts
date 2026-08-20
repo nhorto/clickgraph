@@ -297,6 +297,15 @@ export interface Coverage {
   accountingGaps?: AccountingGap[];
   /** Which budget stopped the walk, if any. null means the walk ran to completion. */
   limitHit: string | null;
+  /**
+   * Every budget the walk ran into, where `limitHit` is only the first.
+   *
+   * Optional because graphs written before issue #50 have none; a reader with
+   * only `limitHit` is told that the walk stopped early and told the wrong
+   * reason, which is how a caveat sends someone to raise a limit that was
+   * never the one in the way.
+   */
+  limitsHit?: string[];
   /** Routes the caller declared should be reachable in this walk. */
   expectedRoutes?: string[];
   /** Declared routes for which the walk discovered no node. */
@@ -465,6 +474,8 @@ export type ChangeKind =
   | 'changed-content'
   | 'new-edge'
   | 'missing-edge'
+  | 'unreached-edge'
+  | 'unreached-state'
   | 'broken-edge'
   | 'fixed-edge'
   | 'changed-edge';
@@ -487,5 +498,15 @@ export interface GraphDiff {
   currentUnreachedRoutes?: string[];
   /** Declared values the current walk never typed, carried for the same reason. */
   currentUnusedFields?: string[];
+  /**
+   * The budget either walk stopped at, when it stopped at one.
+   *
+   * Carried into the diff because a saturated walk changes how every finding
+   * below it should be read, and until #50 nothing connected the two: the
+   * limit was named at the end of the WALK output while the findings it
+   * explained sat in the DIFF section, with no line between them.
+   */
+  baselineLimitHit?: string | null;
+  currentLimitHit?: string | null;
   changes: Change[];
 }

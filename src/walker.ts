@@ -513,6 +513,17 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   /** `--field` specs whose selector matched something the walk typed into. */
   const fieldsUsed = new Set<string>();
   let limitHit: string | null = null;
+  /**
+   * Every budget this walk ran into, not only the first.
+   *
+   * `limitHit` keeps the first, which is fine for "did this walk stop early"
+   * and wrong for "what stopped it" — a walk that stops expanding at maxDepth
+   * early on and then spends its whole maxActions reports maxDepth, so a diff
+   * explaining an evicted control names a budget that had nothing to do with
+   * it (issue #50). Raising the one it names changes nothing, which is the
+   * worst way for a caveat to be wrong.
+   */
+  const limitsHit = new Set<string>();
   let actionsUsed = 0;
   /**
    * How re-entry was paid for, kept for the progress log only.
@@ -903,6 +914,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         const { el, appearedIn } = pending[i]!;
         if (actionsUsed >= config.maxActions) {
           limitHit = limitHit ?? `maxActions (${config.maxActions})`;
+            limitsHit.add(`maxActions (${config.maxActions})`);
           skipped.push({
             nodeId: state.nodeId, label: el.selector.label, reason: 'budget',
             detail: `the maxActions budget (${config.maxActions}) was spent before the walk ` +
@@ -1417,6 +1429,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         if (reachedNew && !nodes[after.nodeId]) {
           if (Object.keys(nodes).length >= config.maxStates) {
             limitHit = limitHit ?? `maxStates (${config.maxStates})`;
+            limitsHit.add(`maxStates (${config.maxStates})`);
             // The screen was reached and then not written down, so without this
             // nothing in the graph would ever mention it or its controls — the
             // worst version of the undercount, because the denominator loses a
@@ -1452,6 +1465,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             frontier.push(after);
           } else {
             limitHit = limitHit ?? `maxDepth (${config.maxDepth})`;
+            limitsHit.add(`maxDepth (${config.maxDepth})`);
             // Was `unwalked += after.elements.length`: a bulk number and not one
             // word about which controls it stood for. The state is recorded with
             // an `interactiveCount` and no out-edges and no skips, which is the
@@ -1634,6 +1648,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
       skipped,
       ...(accountingGaps.length > 0 ? { accountingGaps } : {}),
       limitHit,
+      limitsHit: [...limitsHit],
       expectedRoutes,
       unreachedRoutes,
       unusedFields,
