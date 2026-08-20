@@ -197,6 +197,22 @@ function isTextEntry(el: ElementDescriptor): boolean {
 const ACTION_TIMEOUT = 2000;
 
 /**
+ * Names a control commonly carries when it is the way back out of a screen.
+ *
+ * Only ever used to pick which control to TRY first when the graph knows no
+ * route home and nothing has been learned yet. Being wrong costs one click, so
+ * this list is allowed to be a rough convention rather than a rule — but it is
+ * English-shaped, and an app that labels its chrome in another language relies
+ * entirely on the learning step above it.
+ */
+const WAY_BACK = /^(back|go back|cancel|close|return|previous|prev|done|exit|[<\u2039\u2190\u00d7\u2715\u2716])$/;
+
+/** Compare controls the way the structure fingerprint does. */
+function token(role: string, name: string): string {
+  return `${role}\u0000${normalizeText(name)}`;
+}
+
+/**
  * Why a control could not be acted on, in the app's terms.
  *
  * Playwright knows exactly which actionability check failed and says so in its
@@ -557,6 +573,24 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
    * no fallback under that one, so it is the number worth surfacing on its own.
    */
   let misreplayed = 0;
+   * Re-entries made by a control matched on the page rather than by a walked
+   * edge, and the ones that guessed wrong (issue #44).
+   *
+   * Kept apart from `routed`/`misrouted` on purpose. A walked route that misses
+   * means the app kept something a reload would have cleared, which is the
+   * alarming reading the counter exists to surface. A guess that misses just
+   * means the guess was wrong, which is ordinary and costs one click. Summing
+   * them would bury the alarming number inside the expected one.
+   */
+  let guessed = 0;
+  let misguessed = 0;
+  /**
+   * `role:name` of every control that has been PROVEN to take this walk back to
+   * a state it wanted. Learned during the run and never persisted: it is a fact
+   * about one app's chrome, cheap to rediscover, and stale the moment the app
+   * is redesigned.
+   */
+  const waysBack = new Set<string>();
 
   /**
    * The two corrections the coverage invariant needs, per node.
@@ -796,6 +830,96 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
     return true;
   }
 
+  /**
+   * A control on the page RIGHT NOW that probably leads to the target state.
+   *
+   * Routing over walked edges cannot help a single-page app, and not because
+   * the budget is too small. The walk expands a state by trying each of its
+   * controls and returning between them, so the direction it always needs is
+   * back to the state being expanded — and the edges out of wherever a control
+   * just landed it are precisely the ones not walked yet, because that state
+   * has not been expanded. The known graph points away from where the walk
+   * needs to go. On the fixture's one real SPA that is 0 routes out of 11,
+   * against roughly half on the multi-page routes, which get away with it only
+   * because a shared nav bar makes their way home a walked edge early
+   * (issue #44).
+   *
+   * So this stops asking what the walk has already done, and asks what is on
+   * the screen. A control here with the same role and accessible name as one
+   * that leads to the target from somewhere else is very likely the same
+   * control: a `Back` button, a nav link, a breadcrumb. That is an inference,
+   * which is normally the reason not to do it — but arrival is verified against
+   * the state's fingerprint before anything is believed, exactly as a walked
+   * route is, and a wrong guess costs one click before the reload happens
+   * anyway.
+   *
+   * Danger is filtered here and nowhere else in the re-entry path. A walked
+   * route replays edges the walk itself took, and the walk never clicks a
+   * control it refused as destructive, so no dangerous edge can be in the
+   * graph to replay. A guess has no such guarantee: it is picking a control off
+   * the current page that may never have been vetted, and a `Delete account`
+   * that happens to share a name with the way home would be clicked on the way
+   * back rather than tested deliberately.
+   */
+  function guessWayBack(here: PageSnapshot, target: string): ElementDescriptor | null {
+    // First choice, and the only one that is knowledge rather than inference:
+    // a control matching one that has already produced an edge INTO the target
+    // from somewhere else. Free when it is available — but on the case this is
+    // for, it never is, because an edge into the target is walked at the same
+    // late moment an edge out of the current state would be.
+    const leadsThere = new Set<string>();
+    for (const edge of edges) {
+      if (edge.to !== target || edge.from === target) continue;
+      if (edge.action.kind !== 'click') continue;
+      leadsThere.add(token(edge.action.role, edge.action.name));
+    }
+
+    const eligible = here.elements.filter(
+      (el) => el.role === 'link' || el.role === 'button',
+    ).filter((el) => config.allowDangerous || !isDangerous(el));
+
+    const known = eligible.find((el) => leadsThere.has(token(el.role, el.name)));
+    if (known) return known;
+
+    // Then whatever has already been PROVEN to lead home in this app. The walk
+    // learns the name rather than being told it: the first probe that lands
+    // where it meant to caches its `role:name`, and every screen after that is
+    // cheap. An app whose way back is "Zurück" costs one probe to discover.
+    const learned = eligible.find((el) => waysBack.has(token(el.role, el.name)));
+    if (learned) return learned;
+
+    // Last, a convention, purely to seed the first probe. This is the weakest
+    // link in the chain and is placed accordingly — it is English-shaped and
+    // will miss on plenty of apps, which costs one click and a reload that was
+    // happening anyway. It never decides anything on its own: whatever it picks
+    // is checked against the target's fingerprint before it is believed, and it
+    // is only ever consulted when knowledge and experience have both come up
+    // empty.
+    return eligible.find((el) => WAY_BACK.test(normalizeText(el.name))) ?? null;
+  }
+
+  /**
+   * Click one control, tolerating its disappearance.
+   *
+   * Presence is checked with `count()` before the click and the click is caught
+   * after it, because the control was enumerated from a snapshot taken earlier
+   * and an app is free to have removed it since — the same exposure that killed
+   * whole runs when a form fill removed the submit it was about to press
+   * (issue #46). Here it is not fatal by construction: a false return just
+   * means the reload happens, which is what would have happened anyway.
+   */
+  async function clickOnce(selector: Selector): Promise<boolean> {
+    try {
+      const it = resolve(page, selector);
+      if ((await it.count()) === 0) return false;
+      await it.click({ timeout: ACTION_TIMEOUT });
+      await settle(page, config.settleMs);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   try {
     // Seed the frontier with the entry state, watching the load itself: an app
     // that errors on arrival must not walk "clean" just because a broken page
@@ -1015,6 +1139,25 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
                 routed++;
               } else {
                 misrouted++;
+              }
+            }
+
+            // Nothing walked leads home — the single-page case. Ask the screen
+            // instead, and hold the answer to the same check.
+            if (!arrived) {
+              const back = guessWayBack(atSnapshot, state.nodeId);
+              if (back) {
+                const here = (await clickOnce(back.selector)) ? await captureState(page) : null;
+                if (here && here.fingerprint.structure === state.fingerprint.structure) {
+                  arrived = here;
+                  guessed++;
+                  // It worked, so stop guessing about it: this app's way back
+                  // is now known by name and every later screen uses it
+                  // directly.
+                  waysBack.add(token(back.role, back.name));
+                } else {
+                  misguessed++;
+                }
               }
             }
           }
@@ -1559,14 +1702,18 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
   // benchmark: every routed re-entry is a page load and an action replay the
   // walk did not have to pay for, and every reload beside it is a state the
   // graph knew no cheap way back to.
-  if (routed + reloaded > 0) {
+  if (routed + guessed + reloaded > 0) {
     log(
       config.fastReentry
-        ? `re-entered states ${routed + reloaded} time(s): ${routed} by a known route, ` +
-          `${reloaded} by reloading` +
+        ? `re-entered states ${routed + guessed + reloaded} time(s): ${routed} by a known ` +
+          `route, ${guessed} by a control on the page, ${reloaded} by reloading` +
           (misrouted > 0
             ? ` (${misrouted} route(s) tried and missed — use --no-fast-reentry if that number ` +
               'is large, this app keeps something a reload clears)'
+            : '') +
+          (misguessed > 0
+            ? ` (${misguessed} guess(es) missed and fell back to reloading, which costs a click ` +
+              'and is not a problem unless it is most of them)'
             : '')
         : `re-entered states ${reloaded} time(s), all by reloading (--no-fast-reentry)`,
     );
