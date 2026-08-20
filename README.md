@@ -308,6 +308,48 @@ the assertion explicitly. A changed list produces the same
 configuration-mismatch warning as other coverage changes. Legacy baselines
 that record only a resolved list continue to inherit that list.
 
+### A budget is not a regression
+
+A walk that runs out of `--max-actions`, `--max-states` or `--max-depth` simply
+does not have the controls it never reached, and a diff used to report each of
+them as `control gone: it was walked in the baseline and is not present now` —
+word for word what a genuinely removed control gets (issue #50).
+
+It is easy to trigger without noticing, because the eviction happens somewhere
+else in the app: two controls added to one screen push unrelated ones off the
+end of the budget on a screen two clicks away. The diff then reports regressions
+on screens the change never touched, and the one real finding is buried among
+them. Nothing about it looks like flakiness either — the output is stable and
+repeats exactly.
+
+The graph already knew. A control the walk enumerated and did not get to is in
+`coverage.skipped` with the budget named, and being enumerated is proof it is
+still on the page — so `gone` was never an available answer. The diff now asks:
+
+- **Enumerated but not walked, for a reason that means the walk ran out**
+  (`budget`, `not-reached`, `frontier-exhausted`) → `not reached this run`,
+  reported as context rather than as a defect, with the specific budget quoted.
+- **Enumerated and skipped for a reason about the control itself** (`disabled`,
+  `dangerous`, `needs-input`) → still a regression, but worded as *no longer
+  walked*, because "not present now" is a false sentence about a control the
+  walk just finished looking at.
+- **Not enumerated at all** → `control gone`, unchanged. This is the finding,
+  and softening it is the one mistake worse than the original.
+
+The same applies one level up, where it costs more: a state whose only door was
+an evicted control was reported as `state no longer reachable` — a regression,
+dragging every control inside it along as fallout. If a baseline edge into that
+state has its control sitting in this run's budget skips, the walk did not find
+the screen gone, it never knocked.
+
+Every diff from a saturated walk also opens with a **Budget note** naming the
+limits, because the limit used to be printed at the end of the *walk* output
+while the findings it explained sat in the *diff* section with nothing
+connecting them. It names every limit the walk met, not just the first — a walk
+that stops expanding at `maxDepth` early and then spends its whole `maxActions`
+would otherwise blame `maxDepth`, sending you to raise a number that was never
+in the way.
+
 ## The failure paths
 
 A walk drives an app whose requests all succeed, which makes an entire class of

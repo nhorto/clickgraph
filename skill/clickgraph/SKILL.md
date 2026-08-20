@@ -168,6 +168,13 @@ Check `load.healthy` and `load.interactiveFound` — an app that fails to load
 renders no controls, so there is nothing to click and nothing to report. The
 verdict string says so; do not translate it into "no issues found".
 
+**`coverage.limitHit` is not a footnote.** If it is set, the walk did not cover
+the whole app, and what it covered can move between runs for reasons the app had
+no part in. Anything in `other` with kind `unreached-edge` or `unreached-state`
+is a control or screen this run did not get to — *not* one that went away. Raise
+the budget and re-run before reporting either as a change, and never describe a
+saturated run as having checked the app.
+
 **A `not-reached` skip that names another screen is about the path, not the
 control.** It means the walk replayed its way back to a state and landed
 somewhere else, so the controls there were never tried. Nothing is wrong with

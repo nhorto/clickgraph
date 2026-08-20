@@ -29,6 +29,8 @@
 #      reported as changed, and one that only restamps a clock is not
 #   Y  a state reached by choosing an option is re-entered by choosing it
 #      again, and a path that stops leading there says so
+#   Z  a control the budget evicted is reported as unreached, and one the app
+#      removed is still reported as gone
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1251,20 +1253,34 @@ echo "U: re-entering a state by routing costs nothing in what is found (issue #2
 # than assumed. `eval/equivalence.mjs` does this across six apps and takes ten
 # minutes; this is the same contract at a size the suite can afford.
 #
-# Bounded with --max-actions so it stays under two minutes, but not so small
-# that no route is ever taken: at 60 the walk gets past the entry page, which is
-# where routing first becomes possible at all.
+# The budget must be big enough that NEITHER walk saturates, and that is not a
+# comfort setting — it is what makes the comparison mean anything.
+#
+# This ran at --max-actions 60 and both walks hit it. A saturated walk spends
+# its last actions on whichever state it reaches first, so a timing difference
+# between the two modes leaves them expanding DIFFERENT screens — and the
+# comparison below then reports "the two ways of re-entering a state disagree
+# about what the app does" when they agreed about every screen they both looked
+# at. It failed exactly that way once in a full suite run and passed three times
+# running in isolation, which is the worst shape a check can have. This is issue
+# #50's phenomenon aimed at the suite itself: at a saturated budget, coverage
+# moves for reasons the app had no part in.
+#
+# 200 is the default and comfortably above the ~110 this walk needs. maxDepth
+# still bounds it, and that is fine: a depth limit decides which states are
+# QUEUED, identically in both modes, where an action limit decides which get
+# EXPANDED and is therefore the one that races.
 start_fixture PORT="$PORT"
 # Deliberately not --json: how the walk re-entered each state is said in the
 # progress output, which --json turns off, and that count is what tells these
 # checks the feature ran at all. Nothing is lost — every finding is derived from
 # the graph, so two identical graphs report identical findings by construction.
-node dist/cli.js walk "$URL/" --max-depth 2 --max-actions 60 --settle 250 \
+node dist/cli.js walk "$URL/" --max-depth 2 --max-actions 200 --settle 250 \
   --no-fast-reentry --out /tmp/clickgraph-reentry-slow.json \
   >/dev/null 2>/tmp/clickgraph-reentry-slow.log
 check "$?" "0" "a walk that reloads its way back to every state still walks cleanly"
 
-node dist/cli.js walk "$URL/" --max-depth 2 --max-actions 60 --settle 250 \
+node dist/cli.js walk "$URL/" --max-depth 2 --max-actions 200 --settle 250 \
   --fast-reentry --out /tmp/clickgraph-reentry-fast.json \
   >/dev/null 2>/tmp/clickgraph-reentry-fast.log
 check "$?" "0" "a walk that routes its way back to every state still walks cleanly"
@@ -1297,6 +1313,17 @@ node -e '
   const fast = require("/tmp/clickgraph-reentry-fast.json");
   if (slow.config.fastReentry !== false || fast.config.fastReentry !== true)
     fail("the graphs do not record which way they were walked");
+  // Said out loud rather than assumed, so a fixture that grows past the budget
+  // one day fails HERE, with the reason, instead of turning this scenario
+  // intermittent again and sending someone to look for a routing bug that is
+  // not there.
+  for (const [name, g] of [["slow", slow], ["fast", fast]]) {
+    const limits = g.coverage.limitsHit ?? (g.coverage.limitHit ? [g.coverage.limitHit] : []);
+    if (limits.some((l) => /maxActions/.test(l)))
+      fail(`the ${name} walk saturated its action budget (${limits.join(", ")}), so the two ` +
+        "walks may have expanded different states and this comparison proves nothing — " +
+        "raise --max-actions in this scenario");
+  }
   const edges = (g) => g.edges
     .map((e) => `${e.from}|${e.action.kind}|${e.action.name}|${e.to}|${e.outcome.kind}`).join("\n");
   if (edges(slow) !== edges(fast))
@@ -1578,6 +1605,100 @@ node -e '
     fail("an edge was recorded on the bay screen, which the walk never got back to");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and its controls are reported unreached, never as findings against a state it never re-entered"
+
+
+echo "Z: a control the budget evicted is not a control the app removed (issue #50)"
+# When a walk runs out of budget, the controls it did not get to are simply
+# absent from its graph, and the next diff called each one "control gone: it was
+# walked in the baseline and is not present now" — the same sentence a genuinely
+# removed control gets. Two controls added to one screen can push unrelated ones
+# off the end of the budget on a screen two clicks away, so the diff reports
+# regressions on screens the change never touched, with the one real finding
+# buried among them. Stable and repeatable, so it does not even look like
+# flakiness.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/" --quiet --max-depth 1 --max-actions 10 \
+  --out /tmp/clickgraph-budget-base.json >/dev/null 2>&1
+check "$?" "0" "a baseline walk that reaches every control on the entry page"
+
+# The same app, walked with less budget. Nothing about it changed, so every
+# difference below is the walk's and not the app's — which is the whole claim.
+node dist/cli.js diff "$URL/" --quiet --max-depth 1 --max-actions 6 \
+  --baseline /tmp/clickgraph-budget-base.json --json \
+  >/tmp/clickgraph-budget-starved.json 2>/dev/null
+check "$?" "0" "a budget-starved diff of an unchanged app reports no regression"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("/tmp/clickgraph-budget-starved.json");
+
+  // Nothing about this app changed. Every regression here would be a lie, and
+  // the four this used to produce were about screens nobody had touched.
+  if (v.regressions.length !== 0)
+    fail(`an unchanged app reported ${JSON.stringify(v.regressions.map((r) => r.summary))}`);
+
+  // Silence would be the other way to get this wrong. The controls really were
+  // not walked, and a run that says nothing about them claims a coverage it
+  // does not have.
+  const unreached = v.other.filter((c) => c.kind === "unreached-edge");
+  if (unreached.length === 0) fail("the evicted controls vanished from the report entirely");
+  if (!unreached.every((c) => /budget/.test(c.summary + c.detail)))
+    fail(`an unreached control does not name the budget: ${JSON.stringify(unreached)}`);
+  if (unreached.some((c) => /gone|not present/.test(c.summary + (c.detail ?? ""))))
+    fail("an evicted control is still described as gone");
+
+  // The state behind an unopened door is the same mistake one level up, and the
+  // more expensive one: a regression rather than a note, dragging every control
+  // inside it along as fallout.
+  const states = v.other.filter((c) => c.kind === "unreached-state");
+  if (states.length === 0)
+    fail("a state behind an evicted control was not reported as unreached");
+
+  // And the caveat has to name the budget that actually did the evicting.
+  // `limitHit` keeps only the first limit a walk meets, so a walk that stops
+  // expanding at maxDepth early and then spends its whole maxActions used to
+  // blame maxDepth — sending the reader to raise a number that was never in
+  // the way.
+  if (!/maxActions \(6\)/.test(v.verdict))
+    fail(`the verdict does not name the budget that evicted them: ${JSON.stringify(v.verdict)}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and says which budget evicted them, at both the control and the state level"
+
+# The counterweight, and the half that regresses silently: a control that really
+# was removed must still read as removed. A fix that turned every absence into a
+# budget note would pass every check above and delete the finding this tool
+# exists to produce.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/orders" --quiet --max-depth 1 \
+  --out /tmp/clickgraph-budget-orders.json >/dev/null 2>&1
+check "$?" "0" "a baseline of the orders screen with its one order link"
+start_fixture PORT="$PORT" EMPTY=1
+node dist/cli.js diff "$URL/orders" --quiet \
+  --baseline /tmp/clickgraph-budget-orders.json --json \
+  >/tmp/clickgraph-budget-removed.json 2>/dev/null
+check "$?" "1" "a genuinely removed control still fails the run"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("/tmp/clickgraph-budget-removed.json");
+  const gone = v.regressions.find((r) => /control gone/.test(r.summary));
+  if (!gone) fail(`a removed control was not reported as gone: ${JSON.stringify(v.regressions)}`);
+  if (!/Order #1042/.test(gone.summary)) fail(`the wrong control: ${gone.summary}`);
+  // It was walked and the budget was never in question, so nothing here may be
+  // softened into a coverage note.
+  if (v.other.some((c) => c.kind === "unreached-edge" && /Order #1042/.test(c.summary)))
+    fail("a removed control was excused as unreached");
+
+  // The state behind it, checked separately and for its own reason. The first
+  // version of this scenario asserted only the control, and a stub that
+  // excused EVERY absence passed all six checks — because the state-level
+  // excuse had nothing testing it. A counterweight that the fix it guards can
+  // walk straight through is not a counterweight.
+  const state = v.regressions.find((r) => /no longer reachable/.test(r.summary));
+  if (!state)
+    fail(`the state behind the removed control was not reported: ${JSON.stringify(v.regressions)}`);
+  if (v.other.some((c) => c.kind === "unreached-state"))
+    fail(`a state whose door was removed was excused as unreached: ${JSON.stringify(v.other)}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and is still called gone, not excused as unreached"
 
 
 echo ""

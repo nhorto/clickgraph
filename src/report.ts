@@ -212,6 +212,28 @@ export function reportDiff(
   const unreachedRoutes = current?.coverage.unreachedRoutes ?? diff.currentUnreachedRoutes ?? [];
   const unusedFields = current?.coverage.unusedFields ?? diff.currentUnusedFields ?? [];
 
+  // Said here, above the findings, and not only at the end of the walk output.
+  // A walk that stopped at a budget did not see the whole app, and that fact
+  // changes how every line below it should be read — most of all the ones about
+  // controls that are not in this run. Two controls added to one screen can
+  // push unrelated ones off the end of the budget on a screen two clicks away,
+  // and the diff then reports them against a change that never touched them
+  // (issue #50). The wording is deliberately about what the reader should do,
+  // because "limitHit: maxActions (200)" is a fact nobody connects to the
+  // three findings underneath it.
+  const limits = [
+    diff.currentLimitHit ? `this walk stopped at ${diff.currentLimitHit}` : null,
+    diff.baselineLimitHit ? `the baseline stopped at ${diff.baselineLimitHit}` : null,
+  ].filter(Boolean);
+  if (limits.length > 0) {
+    lines.push(c.yellow(c.bold('Budget note')));
+    lines.push(`  ${limits.join('; ')}.`);
+    lines.push(c.dim('  A saturated walk does not cover the whole app, and what it covers can move'));
+    lines.push(c.dim('  between runs. Raise the budget and re-run before reading anything into a'));
+    lines.push(c.dim('  control this diff says it did not reach.'));
+    lines.push('');
+  }
+
   if (diff.changes.length === 0 && unreachedRoutes.length === 0 && unusedFields.length === 0) {
     lines.push(c.green('  No change. Every walked interaction behaves as it did in the baseline.'));
     lines.push('');
