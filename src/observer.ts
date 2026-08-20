@@ -105,8 +105,9 @@ function extractPageData() {
     }
 
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
-      if (el.id) {
-        const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const ownId = idOf(el);
+      if (ownId) {
+        const label = document.querySelector(`label[for="${CSS.escape(ownId)}"]`);
         if (label?.textContent?.trim()) return label.textContent.trim();
       }
       const wrapping = el.closest('label');
@@ -143,9 +144,36 @@ function extractPageData() {
     return 'generic';
   }
 
+  /**
+   * An element's id, read off the ATTRIBUTE rather than the property.
+   *
+   * On a `<form>` those are not the same thing. HTMLFormElement exposes its own
+   * controls as named properties, and those override built-ins — so a form
+   * containing `<input name="id">` answers `form.id` with the INPUT ELEMENT.
+   * Every admin filter, every search-by-id box, every edit form with an id
+   * field is that shape, and `cssPath` walks ancestors, so it met one on the
+   * first walk of the first real app it was pointed at: `id.startsWith is not
+   * a function`, thrown out of a page evaluate, killing the whole run and
+   * writing no graph.
+   *
+   * The same shadowing applies to any property a control's name can collide
+   * with — `form.action`, `form.method`, even `form.tagName`. `id` is the one
+   * that is common enough to matter, and the attribute is the honest source
+   * for all of them.
+   */
+  function idOf(el: any): string {
+    const id = el.getAttribute ? el.getAttribute('id') : null;
+    return typeof id === 'string' ? id : '';
+  }
+
   /** React/Radix-style generated ids change every render — never anchor to them. */
-  function isStableId(id: string): boolean {
-    if (!id) return false;
+  function isStableId(id: unknown): boolean {
+    // Typed as unknown and checked, rather than trusted to be a string. The
+    // attribute read above is the fix; this is the second, independent one,
+    // because the cost of being wrong here is not a bad selector — it is an
+    // exception thrown inside a page evaluate, which takes down a walk that
+    // had already found everything it found (the shape of issue #46).
+    if (typeof id !== 'string' || !id) return false;
     if (id.startsWith(':r') || id.startsWith('radix-') || id.startsWith('headlessui-')) return false;
     if (/\d{6,}/.test(id)) return false;
     return true;
@@ -216,8 +244,9 @@ function extractPageData() {
     const parts: string[] = [];
     let cur: any = el;
     while (cur && cur.nodeType === 1 && cur !== document.body) {
-      if (cur.id && isStableId(cur.id)) {
-        parts.unshift(`#${CSS.escape(cur.id)}`);
+      const curId = idOf(cur);
+      if (isStableId(curId)) {
+        parts.unshift(`#${CSS.escape(curId)}`);
         return parts.join(' > ');
       }
       let part = cur.tagName.toLowerCase();
@@ -320,8 +349,11 @@ function extractPageData() {
 
     if (testid && document.querySelectorAll(`[${testidAttr}="${CSS.escape(testid)}"]`).length === 1) {
       selector = { strategy: 'testid', value: `[${testidAttr}="${testid}"]`, label };
-    } else if (el.id && isStableId(el.id) && document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) {
-      selector = { strategy: 'id', value: `#${el.id}`, label };
+    } else if (
+      isStableId(idOf(el)) &&
+      document.querySelectorAll(`#${CSS.escape(idOf(el))}`).length === 1
+    ) {
+      selector = { strategy: 'id', value: `#${idOf(el)}`, label };
     } else if (name && roleNameCounts.get(`${role}|${name}`) === 1) {
       selector = { strategy: 'role-name', value: `${role}|${name}`, label };
     } else if (el.innerText?.trim() && textCounts.get(el.innerText.trim()) === 1) {
@@ -566,8 +598,15 @@ export async function readScrollPositions(page: Page): Promise<ScrollReading | n
         // The class attribute is deliberately not part of the key — a page that
         // flips a class on its scroller would otherwise lose the pane's
         // identity and, with it, the reading.
+        // The id comes off the attribute for the same reason it does in
+        // `extractPageData`: a `<form>` with a control named `id` answers
+        // `.id` with that control, and a scrollable form is not exotic.
+        // Concatenating an element into a template string would silently key
+        // the pane on "[object HTMLInputElement]" rather than crash, which is
+        // the quieter half of the same bug.
+        const paneId = el.getAttribute('id');
         panes.push({
-          key: `${panes.length}:${el.tagName}${el.id ? `#${el.id}` : ''}`,
+          key: `${panes.length}:${el.tagName}${typeof paneId === 'string' && paneId ? `#${paneId}` : ''}`,
           top: Math.round(el.scrollTop),
           left: Math.round(el.scrollLeft),
         });

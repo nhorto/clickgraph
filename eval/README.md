@@ -111,6 +111,22 @@ planted bugs in a real app's DOM are worth more than the same bugs in the
 fixture, because real DOM is where the last ten false-positive classes came
 from.
 
+**`mutate.mjs` does not clone.** It edits files in `cwd` and restores them
+byte-for-byte afterwards, so an external target's mutation file has to point at
+a checkout that already exists. Point it at the one `replay.mjs` makes —
+`eval/.work/<name>/repo`, which is gitignored scratch — and run the replay
+first, or clone it there by hand:
+
+```bash
+git clone https://github.com/marmelab/react-admin.git eval/.work/react-admin/repo
+```
+
+Pick mutation targets from a walk you have actually done, not from reading the
+source. A mutation aimed at a control the walk never reaches is not a detection
+gap, it is a wasted slot that reports as MISSED and sends you looking for a bug
+that is not there. Walk the target once, list the controls that produced edges,
+and plant only among those.
+
 ## Track 4 — fast-vs-slow equivalence (`equivalence.mjs`)
 
 ```bash

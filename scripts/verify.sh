@@ -31,6 +31,8 @@
 #      again, and a path that stops leading there says so
 #   Z  a control the budget evicted is reported as unreached, and one the app
 #      removed is still reported as gone
+#   AA a form with a field named `id` does not kill the walk, and the dead
+#      control beside it is still found
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1699,6 +1701,52 @@ node -e '
     fail(`a state whose door was removed was excused as unreached: ${JSON.stringify(v.other)}`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and is still called gone, not excused as unreached"
+
+
+echo "AA: a form with a field named id does not kill the walk (issue #55)"
+# HTMLFormElement exposes its own controls as named properties and those
+# override built-ins, so /registry's form answers `.id` with its INPUT rather
+# than with the string "lookup". cssPath walks ancestors reading `.id` off each
+# one, met an element, and `id.startsWith is not a function` came out of a page
+# evaluate and ended the run — no graph, no baseline, everything already
+# discovered lost. Found on the first walk of the first third-party app this
+# tool was pointed at.
+start_fixture PORT="$PORT"
+# Removed first, and that is not tidiness. A crashed walk writes no graph, so
+# the check below would `require` whatever a PREVIOUS suite run left there and
+# pass over a run that produced nothing — which is exactly how it behaved the
+# first time this scenario was falsified.
+rm -f /tmp/clickgraph-registry.json
+node dist/cli.js walk "$URL/registry" --quiet --max-depth 1 \
+  --out /tmp/clickgraph-registry.json >/tmp/clickgraph-registry.txt 2>&1
+check "$?" "0" "a form whose field is named id does not take the run down with it"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const g = require("/tmp/clickgraph-registry.json");
+
+  // Surviving the page is not the claim. A fix that swallowed the evaluate
+  // error would survive it too, and would report a clean screen — so the
+  // counterweight is the dead control OUTSIDE the form, which is only found by
+  // a walk that actually enumerated and exercised everything here.
+  const dead = g.edges.find((e) => /Export registry/.test(e.action?.selector?.label ?? ""));
+  if (!dead) fail("the dead control was not walked, so the page was survived rather than read");
+  if (dead.outcome.kind !== "no-effect")
+    fail(`the dead control came back ${dead.outcome.kind}`);
+
+  // And a control INSIDE the form was described and clicked, which is the one
+  // that makes cssPath walk over the form at all. A page with such a form but
+  // no control within it never reaches the form and proves nothing.
+  const inside = g.edges.find((e) => /Find/.test(e.action?.selector?.label ?? ""));
+  if (!inside) fail("no control inside the form was walked, so cssPath never met it");
+
+  // The quieter half of the same bug: read as a property and concatenated
+  // rather than compared, an element does not throw — it stringifies. A
+  // selector or a scroll-pane key built that way is silently wrong, which is
+  // harder to notice than a crash and lasts longer.
+  const bad = JSON.stringify(g).match(/\[object [A-Za-z]+\]/);
+  if (bad) fail(`an element was stringified into the graph: ${bad[0]}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and the walk still finds the dead control beside it, with no element stringified in"
 
 
 echo ""

@@ -1,0 +1,58 @@
+{
+  "name": "react-admin",
+  "cwd": "eval/.work/react-admin/repo",
+  "url": "http://localhost:4373/",
+  "install": "corepack yarn install --mode=skip-build",
+  "serve": "cd examples/simple && corepack yarn dev --port 4373 --strictPort",
+  "readyTimeoutMs": 120000,
+  "walkArgs": [
+    "--max-depth",
+    "2",
+    "--max-actions",
+    "120",
+    "--settle",
+    "400"
+  ],
+  "mutations": [
+    {
+      "id": "tags-menu-gone",
+      "description": "Remove the Tags item from the nav menu. The /#tags screen still exists and is now unreachable through the UI \u2014 the shape a walk is uniquely placed to catch, since nothing about the route changed",
+      "file": "examples/simple/src/Layout.tsx",
+      "find": "<Menu.ResourceItem name=\"tags\" keyboardShortcut=\"g>t\" />",
+      "replace": "",
+      "expect": {
+        "match": "Tags"
+      }
+    },
+    {
+      "id": "theme-toggle-dead",
+      "description": "Unwire the light/dark toggle. Its whole effect is colour, so this only fails to be caught if the visual signal is not working on real DOM \u2014 the exact case issue #1 was about, on an app nobody here wrote",
+      "file": "packages/ra-ui-materialui/src/button/ToggleThemeButton.tsx",
+      "find": "        setTheme(theme === 'dark' ? 'light' : 'dark');",
+      "replace": "        /* mutation: handler unwired */",
+      "expect": {
+        "match": "theme"
+      }
+    },
+    {
+      "id": "refresh-dead",
+      "description": "Unwire the toolbar Refresh button so it re-renders nothing. It reads as state-changed in a healthy walk because the list re-fetches",
+      "file": "packages/ra-ui-materialui/src/button/RefreshIconButton.tsx",
+      "find": "                onClick={handleClick}",
+      "replace": "                onClick={() => {}}",
+      "expect": {
+        "match": "Refresh"
+      }
+    },
+    {
+      "id": "edit-button-gone",
+      "description": "Remove the per-row Edit button from the posts table. Six walked edges disappear at once, which is also the case #50 cares about: a real removal must still read as gone, not be excused as a budget eviction",
+      "file": "examples/simple/src/posts/PostList.tsx",
+      "find": "                <EditButton />",
+      "replace": "",
+      "expect": {
+        "match": "Edit"
+      }
+    }
+  ]
+}
