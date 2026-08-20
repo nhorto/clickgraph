@@ -1,0 +1,11 @@
+{
+  "name": "react-admin",
+  "repo": "https://github.com/marmelab/react-admin.git",
+  "branch": "master",
+  "url": "http://localhost:4373/",
+  "install": "corepack yarn install --mode=skip-build",
+  "serve": "cd examples/simple && corepack yarn dev --port 4373 --strictPort",
+  "pairs": 3,
+  "readyTimeoutMs": 120000,
+  "walkArgs": ["--max-depth", "2", "--max-actions", "120", "--settle", "400"]
+}

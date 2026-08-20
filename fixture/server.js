@@ -70,6 +70,13 @@
  *      manifest" sits second on the bay screen on purpose: reaching it costs a
  *      re-entry, so a run that replays wrong cannot report it correctly.
  *
+ *  19. /registry — a form whose field is named `id`, which makes the form
+ *      itself answer `.id` with that input rather than with its own id
+ *      string. Reading the property instead of the attribute threw out of a
+ *      page evaluate and killed the whole run (issue #55). The dead "Export
+ *      registry" beside it is what proves a surviving walk still did its job
+ *      rather than swallowing the page.
+ *
  * Run with REWORD=1 to reword every cell of /inventory's table and change
  * nothing else — no control added, removed or relabelled, no heading touched.
  * This is the shape `diff` used to call "No change" (issue #48): the screen a
@@ -768,6 +775,46 @@ const routes = {
         window.scrollTo(0, 0);
       });
       // "Share release notes" is intentionally wired to nothing at all.
+    </script>`),
+  /*
+   * The screen of issue #55: a form with a field named `id`.
+   *
+   * `HTMLFormElement` exposes its own controls as named properties and those
+   * override built-ins, so this form answers `form.id` with the INPUT rather
+   * than with the string "lookup". `cssPath` walks ancestors reading `.id` off
+   * each one, met an element instead of a string, and `id.startsWith is not a
+   * function` came out of a page evaluate and ended the run — no graph, no
+   * baseline, everything already discovered lost.
+   *
+   * `name="id"` is not exotic. It is every admin filter and every
+   * search-by-id box; this was found on the first walk of the first
+   * third-party app the tool was pointed at, about twenty interactions in.
+   *
+   * "Export registry" is the counterweight and sits OUTSIDE the form on
+   * purpose. Surviving the page is not the claim — a fix that swallowed the
+   * evaluate error would also survive it, and would report a clean screen. The
+   * claim is that the walk still finds the dead control, which means it still
+   * enumerated and exercised everything here.
+   *
+   * The trigger has to be a control INSIDE the form, because `cssPath` walks
+   * up from the element it is describing: a page with such a form but no
+   * control within it never reaches the form at all.
+   */
+  '/registry': bare('Registry', `
+    <h1>Registry</h1>
+    <form id="lookup" data-testid="lookup-form">
+      <label>Record id <input name="id" data-testid="record-id" value=""></label>
+      <button type="submit" data-testid="find-record">Find</button>
+    </form>
+    <p id="registry-result"></p>
+    <p><button data-testid="registry-export">Export registry</button></p>
+    <script>
+      document.getElementById('lookup').addEventListener('submit', (e) => {
+        e.preventDefault();
+        document.getElementById('registry-result').textContent =
+          'No record matches that id.';
+      });
+      // "Export registry" is intentionally wired to nothing at all.
     </script>`),
   /*
    * The screen of issue #43: a state whose only door is a chosen option.
