@@ -25,6 +25,8 @@
 #      and a declaration that lands nowhere fails the run instead of passing
 #   V  a control the walk's own form fill removes is a skip, not a dead run
 #   W  a digits-only field declared with inputmode is filled with digits
+#   X  a screen whose every word changed and whose every control did not is
+#      reported as changed, and one that only restamps a clock is not
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1377,6 +1379,97 @@ node -e '
     fail(`the field was filled with ${JSON.stringify(typed)}, which is not a number`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and the button it gates is pressed, and works"
+
+
+echo "X: a screen whose every word changed and whose every control did not (issue #48)"
+# /inventory is the shape every structural signal agrees is untouched: same
+# route, same headings, same controls, same count. Reword every cell of its
+# table and `diff` used to answer "No change. Every walked interaction behaves
+# as it did in the baseline." — the one sentence that lets a UI change through
+# review, said over a screen a reviewer would fail on sight.
+start_fixture PORT="$PORT"
+node dist/cli.js walk "$URL/inventory" --quiet --max-depth 1 \
+  --out /tmp/clickgraph-content-base.json >/tmp/clickgraph-content.txt 2>&1
+check "$?" "0" "a walk of the inventory screen succeeds"
+
+# The quiet half FIRST, because it is the half that regresses silently. The
+# page stamps a fresh Date.now() into itself on every load, which is what real
+# screens do, and a text signal that reports it is one nobody reads by the
+# second week. Falsified before being trusted: with the digit normalisation
+# taken out of the build, this check reports a text change on an app nobody
+# touched — which is the whole reason it comes before the loud one.
+node dist/cli.js diff "$URL/inventory" --quiet --max-depth 1 \
+  --baseline /tmp/clickgraph-content-base.json --json >/tmp/clickgraph-content-same.json 2>/dev/null
+check "$?" "0" "an unchanged screen that restamps itself on every load is not a text change"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("/tmp/clickgraph-content-same.json");
+  if (v.other.length !== 0)
+    fail(`the unchanged screen reported ${JSON.stringify(v.other.map((c) => c.summary))}`);
+  // And it stayed quiet for the right reason. If both loads landed on the same
+  // millisecond the stamp never moved, nothing was normalised, and the check
+  // above would pass with the feature deleted.
+  if (v.baselineWalkedAt === v.currentWalkedAt)
+    fail("both walks share a timestamp, so the volatile stamp may not have differed at all");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and the two loads really did differ, so the silence was earned"
+
+# Now the loud half. Nothing on this page moves except the words.
+start_fixture PORT="$PORT" REWORD=1
+node dist/cli.js diff "$URL/inventory" --quiet --max-depth 1 \
+  --baseline /tmp/clickgraph-content-base.json --json >/tmp/clickgraph-content-reworded.json 2>/dev/null
+check "$?" "0" "rewording every cell does not fail the run"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("/tmp/clickgraph-content-reworded.json");
+
+  const said = v.other.find((c) => c.kind === "changed-content");
+  if (!said) {
+    fail(`no text change reported. verdict: ${JSON.stringify(v.verdict)}`);
+  }
+  if (!/inventory/.test(said.summary))
+    fail(`the finding does not name the screen: ${JSON.stringify(said.summary)}`);
+
+  // Reported as shape would be the wrong diagnosis and the wrong repair: a
+  // reader told controls changed goes looking for a control that did not move.
+  if (v.other.some((c) => c.kind === "changed-state"))
+    fail("the rewording was reported as a shape change, and no control changed shape");
+
+  // Info, not regression, and deliberately so: adding or removing a CONTROL is
+  // not a regression here, so changing a word cannot be. What was broken was
+  // the silence, not the exit code.
+  if (v.regressions.length !== 0)
+    fail(`a copy change failed the run: ${JSON.stringify(v.regressions)}`);
+  if (v.ok !== true) fail("ok went false over a text change");
+
+  // The verdict line is what an agent reads, and "no change" is the sentence
+  // this whole scenario exists to stop it from getting.
+  if (/no change/i.test(v.verdict))
+    fail(`the verdict still says nothing happened: ${JSON.stringify(v.verdict)}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and it is reported as a text change, on the right screen, without failing the gate"
+
+# A baseline written before this existed carries no content hash, and the only
+# honest answer from one is silence. Reporting a text change against a baseline
+# that never measured text would flag every state of every older graph on the
+# first run after upgrading — the #37 rule, applied to a different signal.
+start_fixture PORT="$PORT"
+node -e '
+  const fs = require("fs");
+  const g = JSON.parse(fs.readFileSync("/tmp/clickgraph-content-base.json", "utf8"));
+  for (const n of Object.values(g.nodes)) delete n.fingerprint.content;
+  fs.writeFileSync("/tmp/clickgraph-content-old.json", JSON.stringify(g));
+'
+node dist/cli.js diff "$URL/inventory" --quiet --max-depth 1 \
+  --baseline /tmp/clickgraph-content-old.json --json >/tmp/clickgraph-content-oldbase.json 2>/dev/null
+check "$?" "0" "a baseline that predates the content hash still diffs"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const v = require("/tmp/clickgraph-content-oldbase.json");
+  if (v.other.some((c) => c.kind === "changed-content"))
+    fail("a baseline that never measured text was read as proof the text changed");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and says nothing about text it never measured"
 
 
 echo ""

@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Action, Change, GraphDiff, UIEdge, UIGraph, OutcomeKind } from './types.js';
+import type { Action, Change, Fingerprint, GraphDiff, UIEdge, UIGraph, OutcomeKind } from './types.js';
 import { normalizeText } from './fingerprint.js';
 
 export const DEFAULT_GRAPH_PATH = '.uigraph/graph.json';
@@ -23,6 +23,22 @@ export function loadGraph(path: string): UIGraph | null {
  */
 function edgeKey(edge: UIEdge): string {
   return `${edge.from}::${edge.action.role}|${normalizeText(edge.action.name)}`;
+}
+
+/**
+ * Whether the visible text of a state changed, when both graphs can say.
+ *
+ * A baseline written before issue #48 carries no `content` at all, and the
+ * honest answer there is "this baseline cannot tell you", not "no". Returning
+ * false for a missing hash is what keeps an old baseline from reading as proof
+ * of a text change that nobody measured — the same rule #37 arrived at for a
+ * replay whose source knew fewer merges than it claimed. Re-walk the baseline
+ * with a current build and the signal starts working; until then it is silent
+ * rather than wrong.
+ */
+function contentChanged(base: Fingerprint, curr: Fingerprint): boolean {
+  if (base.content === undefined || curr.content === undefined) return false;
+  return base.content !== curr.content;
 }
 
 const WORKING: OutcomeKind[] = ['navigated', 'state-changed', 'network-only'];
@@ -132,6 +148,34 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
         kind: 'changed-state',
         severity: 'info',
         summary: `${nodeLabel(current, id)} changed shape: ${wording}`,
+      });
+    } else if (contentChanged(base.fingerprint, current.nodes[id].fingerprint)) {
+      // Same controls, different words. Every other signal in this diff moves
+      // when a control does, so a release that reworded every cell of a table
+      // and touched nothing else came back "No change" — over a screen whose
+      // every cell now said something wrong (issue #48). The sentence was the
+      // defect: it is read as "nothing about this screen changed", and it is
+      // the gate that lets a UI change land.
+      //
+      // Reported only when `structure` is unchanged, and that is not a
+      // shortcut. A shape change already says this screen is not what it was,
+      // in a sentence naming the controls that moved; adding "and the text
+      // differs" to it says nothing a reader can act on, and this signal has
+      // to earn its place by speaking only where nothing else can.
+      //
+      // `info`, not `regression`, for consistency with the line above it: if
+      // adding or removing a *control* is not a regression, changing a word
+      // cannot be. Almost every text change is somebody's intent. What was
+      // broken was silence, not the exit code — the run now names the screen
+      // and leaves the judgment where it belongs.
+      changes.push({
+        kind: 'changed-content',
+        severity: 'info',
+        summary: `${nodeLabel(current, id)} changed text: same controls, different words`,
+        detail:
+          'no control was added, removed or renamed. Digits are normalised away before ' +
+          'comparing, so this is not a counter or a timestamp moving — the wording itself ' +
+          'is not what it was',
       });
     }
   }

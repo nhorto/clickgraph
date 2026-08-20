@@ -151,6 +151,16 @@ From `walk`:
 From `diff`, read `regressions` — those are actionable now. `other` is context;
 a new working control shows up there and is not a problem.
 
+**`changed-content` in `other` needs your eyes, not the exit code's.** It means
+a screen kept every control it had and changed what it *says* — the same words
+in the same places, different words. Digits are normalised away first, so it is
+never a counter or a clock; something was reworded, blanked, or is rendering a
+placeholder where a value used to be. If you just changed that copy, it is
+confirmation. If you did not, it is the finding: `ok` stays `true`, because
+copy is usually somebody's intent and the tool does not read English well
+enough to judge which. Do not report a run carrying one of these as
+"no changes".
+
 ## Rules for acting on it
 
 **`ok: true` with `walked: 0` is not a pass.** It means nothing was exercised.

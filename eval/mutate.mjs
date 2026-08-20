@@ -16,6 +16,10 @@
  * matches is reported as stale, never silently skipped). Files are restored
  * byte-for-byte after every mutation, pass or fail.
  *
+ * `expect.severity` says which list the finding belongs in — 'regression' by
+ * default, or 'info' for a change the tool is right to report and wrong to
+ * fail the build over. Both are detection; only one is a defect.
+ *
  * Exit code: 0 all mutations caught, 1 any missed, 2 harness/setup error.
  */
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -129,27 +133,49 @@ for (const [i, m] of selected.entries()) {
       continue;
     }
 
-    const regressions = diff.verdict.regressions ?? [];
+    // `expect.severity` decides which list a planted bug is supposed to land
+    // in, and the default stays 'regression' so every existing mutation reads
+    // as it always did.
+    //
+    // It exists because the harness could previously only ask "did this fail
+    // the build?", and that is a narrower question than "did the tool report
+    // it". A whole class of true detection — a screen reported as changed
+    // without the change being called a defect — was invisible to the number
+    // this file prints, which is why the README's own fairness rule quietly
+    // excluded text mutations and why nobody noticed for months that a
+    // reworded table came back "No change" (issue #48). A sensitivity harness
+    // that can only see regressions will always report perfect sensitivity to
+    // the things it can see.
+    const severity = m.expect?.severity ?? 'regression';
+    const reported = severity === 'info'
+      ? (diff.verdict.other ?? [])
+      : (diff.verdict.regressions ?? []);
     const matcher = m.expect?.match ? new RegExp(m.expect.match, 'i') : null;
     const matched = matcher
-      ? regressions.filter((r) => matcher.test(`${r.summary} ${r.detail ?? ''}`))
-      : regressions;
-    const caught = diff.status === 1 && matched.length > 0;
+      ? reported.filter((r) => matcher.test(`${r.summary} ${r.detail ?? ''}`))
+      : reported;
+    // An 'info' mutation must NOT fail the run — being reported without being
+    // called a defect is the whole of what it claims, and an exit 1 would mean
+    // something else broke and took the credit.
+    const exitAsExpected = severity === 'info' ? diff.status === 0 : diff.status === 1;
+    const caught = exitAsExpected && matched.length > 0;
 
     if (caught) {
       console.log(`  CAUGHT: ${matched[0].summary}`);
-    } else if (regressions.length > 0) {
+    } else if (reported.length > 0) {
       console.log(`  MISSED the planted bug, but flagged something else:`);
-      for (const r of regressions) console.log(`    - ${r.summary}`);
+      for (const r of reported) console.log(`    - ${r.summary}`);
     } else {
       console.log(`  MISSED: diff exit ${diff.status} — ${diff.verdict.verdict}`);
     }
     record({
       id: m.id,
       outcome: caught ? 'caught' : 'missed',
+      expectedSeverity: severity,
       exit: diff.status,
       verdict: diff.verdict.verdict,
-      regressions,
+      regressions: diff.verdict.regressions ?? [],
+      other: diff.verdict.other ?? [],
       matchedExpectation: matched.map((r) => r.summary),
       durationMs: Date.now() - started,
     });

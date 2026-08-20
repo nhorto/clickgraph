@@ -71,7 +71,13 @@ Deliberately split in two, because one half is much cheaper than the other:
       to key on, and guessing one wrong means typing into fields that do not
       belong together. Currently skipped, which is honest, and a real gap.
 - [ ] Keep walking new real apps; each one so far has found a false-positive
-      class the fixture could not (see README).
+      class the fixture could not (see README). The streak broke in the useful
+      direction on 2026-08-19: a real app produced the first false *negative*
+      class instead — a release that reworded every cell of a table and came
+      back `No change`, because every persisted signal moved only when a
+      control did (issue #48). Worth noting that ten apps' worth of dogfooding
+      found ten ways to cry wolf and one way to stay silent, and the silent one
+      took longer to find precisely because nothing shows up when it fires.
 - [x] `--fail-requests` makes matching requests fail for the whole walk, so
       error banners, retry buttons and offline states stop being structurally
       invisible (issue #15). The judgment inverts: a control that fires a

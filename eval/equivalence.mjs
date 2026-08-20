@@ -81,6 +81,12 @@ const canon = {
     Object.values(g.nodes)
       .map((n) => [
         n.id, n.url, n.title, n.fingerprint.structure,
+        // The content tier is compared too, and it is the field with the most
+        // to say here: a routed re-entry arrives by clicking through the live
+        // app where a reload arrives at a fresh one. If those two ever record
+        // a state with different text, this is where it shows, and the docs
+        // above promise nothing is quietly left out.
+        `content=${n.fingerprint.content ?? 'absent'}`,
         `controls=${n.interactiveCount}`,
         `path=${n.path.map(actionOf).join(' > ')}`,
       ].join('  '))
