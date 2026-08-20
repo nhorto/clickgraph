@@ -232,6 +232,23 @@ typing first. Clicking submit again on an empty form lands on the empty-form
 branch, which is a different screen with none of the controls the walk came
 back for.
 
+**And re-choosing it.** The same rule holds for a state opened by picking an
+option: a `select` step in a path is replayed with `selectOption`, using the
+option's recorded `value` — not by clicking the control, which opens the list
+and chooses nothing. That was the bug's shape for a while (issue #43), and it
+is quiet rather than loud: clicking a `<select>` *succeeds*, so the walk went
+back to a screen it had reached by filtering, arrived on the unfiltered one,
+and carried on. The dead control behind the filter was reported as `unreachable`
+— which reads as the app removing it — instead of as the finding it was.
+
+**Arrival is checked, never assumed.** After replaying a path, the walk compares
+where it landed against the state it was sent to, and reports a mismatch as
+`not-reached` with the screen it actually reached named in the reason. Any
+replay can land elsewhere without failing a single step: a selector that now
+matches a different control, an app that redirects, a race. The alternative is
+worse than a missed finding — it is real observations filed against a screen the
+browser was never on, in a run that exits 0.
+
 ## Deterministic app state
 
 Form submissions and other walked controls can change a persistent development

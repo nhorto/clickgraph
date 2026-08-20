@@ -168,6 +168,12 @@ Check `load.healthy` and `load.interactiveFound` — an app that fails to load
 renders no controls, so there is nothing to click and nothing to report. The
 verdict string says so; do not translate it into "no issues found".
 
+**A `not-reached` skip that names another screen is about the path, not the
+control.** It means the walk replayed its way back to a state and landed
+somewhere else, so the controls there were never tried. Nothing is wrong with
+those controls and nothing has been proved about them either; what changed is
+the route in. Re-walk to rebuild the path before reading anything into it.
+
 **Unwalked is not working.** `coverage.unwalked` and `coverage.skipped` are
 controls nobody proved anything about. Never describe a run as verifying the
 whole UI. If coverage matters to the claim you are about to make, state the

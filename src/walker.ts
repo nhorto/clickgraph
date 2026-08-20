@@ -533,6 +533,17 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
    * nothing, and many of them mean the app keeps something a reload clears.
    */
   let misrouted = 0;
+  /**
+   * Reloads that replayed the whole path and still landed somewhere else.
+   *
+   * Separate from `misrouted`, because the two mean opposite things about the
+   * app. A missed route says the app keeps something a reload clears, which is
+   * ordinary and is what the reload fallback is for. A missed *replay* says the
+   * path itself no longer leads where it led when the state was found — a step
+   * whose selector drifted onto another control, a redirect, a race. There is
+   * no fallback under that one, so it is the number worth surfacing on its own.
+   */
+  let misreplayed = 0;
 
   /**
    * The two corrections the coverage invariant needs, per node.
@@ -671,7 +682,27 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         // A step that is not there will not appear by waiting five seconds for
         // it, and the whole path fails either way — so fail on the count.
         if ((await step.count()) === 0) return false;
-        await step.click({ timeout: ACTION_TIMEOUT });
+        // Replay the step the way it was performed, not the way most steps
+        // are. Every step used to be clicked, which is right for a click and
+        // wrong for the other two kinds — and wrong in the quietest possible
+        // way, because clicking a `<select>` opens it, chooses nothing, and
+        // succeeds. The walk went back to a state it had reached by filtering
+        // and arrived on the unfiltered screen, then attributed everything it
+        // found there to the state it thought it was in (issue #43).
+        if (action.kind === 'select') {
+          // By value where the graph recorded one, by label where it did not.
+          // The fallback is for graphs walked before the value was kept, and
+          // it is a guess only when two options read the same; clicking was a
+          // guess always, and a losing one.
+          await step.selectOption(
+            action.option !== undefined ? action.option : { label: action.value ?? '' },
+            { timeout: ACTION_TIMEOUT },
+          );
+        } else if (action.kind === 'hover') {
+          await step.hover({ timeout: ACTION_TIMEOUT });
+        } else {
+          await step.click({ timeout: ACTION_TIMEOUT });
+        }
         await settle(page, config.settleMs);
       } catch {
         return false;
@@ -687,11 +718,18 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
    * Only click edges are eligible, and the reason is different for each of the
    * kinds left out. A `fill` edge submits a form, so travelling through one
    * creates data as a side effect of going somewhere — the walk is allowed to
-   * submit a form to test it, not to commute. A `select` edge records the
-   * option's *label* rather than its value, so replaying one is a guess. And a
-   * `hover` edge only holds while the pointer stays put, which the next action
-   * moves. A click is the one action that means the same thing on the way back
-   * as it did on the way out.
+   * submit a form to test it, not to commute. And a `hover` edge only holds
+   * while the pointer stays put, which the next action moves. A click is the
+   * one action that means the same thing on the way back as it did on the way
+   * out.
+   *
+   * A `select` edge was excluded for a reason that has since stopped being
+   * true: it recorded the option's label and not its value, so replaying one
+   * was a guess. Both are recorded now (issue #43), so the exclusion is a
+   * choice rather than a limit — and it is left standing deliberately, because
+   * admitting a new edge kind changes which states the walk routes to and
+   * would need its own `eval/equivalence.mjs` run to be worth anything. Said
+   * here rather than quietly left as a stale justification.
    *
    * `limit` is what the reload costs: replaying the path is `path.length`
    * clicks, and the reload itself is one more navigation on top of them. So a
@@ -978,7 +1016,30 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
               atSnapshot = null;
               continue;
             }
-            arrived = await captureState(page);
+            // Where it landed, not where it was sent. The routed path above has
+            // checked this since #23 and the reload path did not, which left
+            // the older and more-travelled of the two as the one that could
+            // land anywhere and call it success (issue #43): a step whose
+            // selector now matches a different control, an app that redirects,
+            // a race — each indistinguishable from arriving. Everything below
+            // then files real observations under a state the browser was never
+            // in, and the run exits 0.
+            const landed = await captureState(page);
+            if (landed.fingerprint.structure !== state.fingerprint.structure) {
+              misreplayed++;
+              skipped.push({
+                nodeId: state.nodeId, label: el.selector.label,
+                reason: 'not-reached',
+                detail: `replaying the path back to this state landed on ${landed.fingerprint.route}` +
+                  ' instead, so the control was never tried — a step on the way in does not do' +
+                  ' what it did when the state was found',
+              });
+              // The browser really is on that page, and saying so is what makes
+              // the next control re-enter rather than act on the wrong screen.
+              atSnapshot = landed;
+              continue;
+            }
+            arrived = landed;
             reloaded++;
           }
           atSnapshot = arrived;
@@ -1216,7 +1277,10 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
         const action: Action = choice
           ? {
               kind: 'select', selector: target, role: el.role, name: el.name,
-              value: choice.label,
+              // Both, and they are not the same string. The label is what the
+              // report says; the value is what `selectOption` needs to make
+              // this choice again (issue #43).
+              value: choice.label, option: choice.value,
             }
           : filled.length > 0
             ? {
@@ -1459,6 +1523,15 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
               'is large, this app keeps something a reload clears)'
             : '')
         : `re-entered states ${reloaded} time(s), all by reloading (--no-fast-reentry)`,
+    );
+  }
+  // Said whether or not routing is on, and never folded into the line above:
+  // this is not a cost, it is a path that has stopped working, and the controls
+  // behind it are in `skipped` rather than in the graph.
+  if (misreplayed > 0) {
+    log(
+      `${misreplayed} replay(s) of a known path landed on a different screen — the controls ` +
+      'behind them were skipped rather than attributed to the wrong state',
     );
   }
 

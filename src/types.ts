@@ -80,11 +80,28 @@ export interface Action {
   role: string;
   name: string;
   /**
-   * For `select`, the option that was chosen. Deliberately not part of the edge
-   * key: an option list built from live data changes between runs, and a filter
-   * that offers different names this week is still the same control.
+   * For `select`, the option that was chosen — its visible LABEL, which is what
+   * a report should say and what a reader recognises. Deliberately not part of
+   * the edge key: an option list built from live data changes between runs, and
+   * a filter that offers different names this week is still the same control.
    */
   value?: string;
+  /**
+   * For `select`, the same option's `value` attribute — which is what actually
+   * re-selects it.
+   *
+   * The label alone is not enough to replay a choice, and for a while nothing
+   * tried: a select step in a path was replayed by *clicking* the select, which
+   * chooses nothing, so the walk went back to a state it had reached by
+   * filtering and arrived on the unfiltered screen (issue #43). `fill` entries
+   * have carried the option's value for exactly this reason since #20; a
+   * select recorded as an action of its own did not.
+   *
+   * Optional because graphs walked before this have only the label. Replay
+   * falls back to matching by label, which is right far more often than
+   * clicking is and is still a guess where two options share a label.
+   */
+  option?: string;
   /**
    * For `fill`, what was typed into each field before the submit was clicked.
    * Kept out of the edge key for the same reason as `value`, and recorded so

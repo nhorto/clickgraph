@@ -27,6 +27,8 @@
 #   W  a digits-only field declared with inputmode is filled with digits
 #   X  a screen whose every word changed and whose every control did not is
 #      reported as changed, and one that only restamps a clock is not
+#   Y  a state reached by choosing an option is re-entered by choosing it
+#      again, and a path that stops leading there says so
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1470,6 +1472,112 @@ node -e '
     fail("a baseline that never measured text was read as proof the text changed");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and says nothing about text it never measured"
+
+
+echo "Y: a state whose only door is a chosen option (issue #43)"
+# /depot is the one shape that puts a `select` step into a state PATH: choosing
+# a bay opens a screen. Every step of a path used to be replayed by clicking,
+# which is right for a click and silently wrong for a select — it opens the
+# list, chooses nothing, and succeeds. The walk went back to a state it had
+# reached by filtering, arrived on the unfiltered screen, and nothing compared
+# where it landed against where it was sent.
+start_fixture PORT="$PORT"
+# Not --json: how each state was re-entered is said in the progress output, and
+# that count is what proves the replay ran at all.
+node dist/cli.js walk "$URL/depot" --max-depth 2 --out /tmp/clickgraph-depot.json \
+  >/dev/null 2>/tmp/clickgraph-depot.log
+check "$?" "0" "a walk of a state behind a chosen option succeeds"
+node -e '
+  const fs = require("node:fs");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const log = fs.readFileSync("/tmp/clickgraph-depot.log", "utf8");
+  const g = require("/tmp/clickgraph-depot.json");
+
+  // FIRST, that a re-entry happened at all — and this check exists because the
+  // first version of this fixture did not force one. Its buttons left the
+  // screen shape alone, the walk never had to travel back, and the run was
+  // byte-identical with the bug present and absent. A scenario that cannot
+  // fail against the bug it names is worse than no scenario.
+  const back = log.match(/re-entered states (\d+) time\(s\)/);
+  if (!back) fail("the walk never re-entered a state, so no path was ever replayed");
+  if (Number(back[1]) < 1) fail("no re-entry happened: " + log.slice(-300));
+  if (/landed on a different screen/.test(log))
+    fail("a replay missed the state it was aimed at: " + log.slice(-300));
+
+  // The dead control sits SECOND on the bay screen, so reaching it costs a
+  // re-entry. Replayed wrong, it is not on the page at all and comes back as a
+  // skip that blames the app — "not on the page when the walk came back" — for
+  // a control that never went anywhere.
+  const dead = g.edges.find((e) => /Print manifest/.test(e.action?.selector?.label ?? ""));
+  if (!dead) {
+    const skip = (g.coverage.skipped ?? []).find((s) => /Print manifest/.test(s.label));
+    fail(`the dead control behind the re-entry was never walked: ${skip ? skip.reason + " — " + skip.detail : "not reported at all"}`);
+  }
+  if (dead.outcome.kind !== "no-effect")
+    fail(`the dead control came back ${dead.outcome.kind}, so the walk was not on the bay screen`);
+
+  // And it is filed against the bay screen, not against the state the walk
+  // would have been looking at if the replay had chosen nothing.
+  const on = g.nodes[dead.from];
+  if (!on || !(on.fingerprint.landmarks ?? []).some((l) => /Bay A/.test(l)))
+    fail(`the finding is attributed to ${dead.from}, which is not the bay screen`);
+
+  if ((g.coverage.skipped ?? []).length !== 0)
+    fail(`controls were skipped: ${JSON.stringify(g.coverage.skipped)}`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the control behind the re-entry is reached, and filed against the right state"
+
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const g = require("/tmp/clickgraph-depot.json");
+  const step = Object.values(g.nodes).flatMap((n) => n.path).find((a) => a.kind === "select");
+  if (!step) fail("no select step landed in any path, so this route tests nothing");
+  // The label is what a report says; the value is what re-selects it, and they
+  // are different strings. Recording only the label is what left replay with
+  // nothing to work from and a click as its fallback.
+  if (step.option === undefined)
+    fail(`the select step recorded only the label ${JSON.stringify(step.value)} and no option value`);
+  if (step.option === step.value)
+    fail("the label and the value on this fixture option match, so this proves nothing");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and the select step is recorded with the option value, not only its label"
+
+# The other half, and the larger one: a path that stops leading where it led.
+# DRIFT reassigns the bay once one has been chosen, so discovery succeeds and
+# every re-entry afterwards lands somewhere else. Nothing about this is
+# detectable from inside the replay — the steps are all found and all performed
+# — which is why arrival has to be checked rather than assumed.
+start_fixture PORT="$PORT" DRIFT=1
+node dist/cli.js walk "$URL/depot" --max-depth 2 --out /tmp/clickgraph-depot-drift.json \
+  >/dev/null 2>/tmp/clickgraph-depot-drift.log
+check "$?" "0" "a walk whose path stops leading where it led still finishes"
+node -e '
+  const fs = require("node:fs");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const log = fs.readFileSync("/tmp/clickgraph-depot-drift.log", "utf8");
+  const g = require("/tmp/clickgraph-depot-drift.json");
+
+  // The state was found. If discovery itself failed there is nothing for a
+  // re-entry to miss, and the rest of this check would pass over an app the
+  // walk never got into.
+  const bay = Object.values(g.nodes)
+    .find((n) => (n.fingerprint.landmarks ?? []).some((l) => /Bay A/.test(l)));
+  if (!bay) fail("the bay screen was never discovered, so no replay had a target to miss");
+
+  if (!/landed on a different screen/.test(log))
+    fail("the walk replayed its way onto another screen and said nothing: " + log.slice(-400));
+
+  // Said as incompleteness, not as findings. Reporting the bay screen controls
+  // as dead here would be the actual damage: real observations of a screen the
+  // browser was never on.
+  const stranded = (g.coverage.skipped ?? []).filter((s) => s.reason === "not-reached");
+  if (stranded.length === 0) fail("nothing was reported as unreached");
+  if (!stranded.every((s) => /landed on/.test(s.detail ?? "")))
+    fail(`a skip does not say where the replay went: ${JSON.stringify(stranded)}`);
+  if (g.edges.some((e) => e.from === bay.id))
+    fail("an edge was recorded on the bay screen, which the walk never got back to");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "and its controls are reported unreached, never as findings against a state it never re-entered"
 
 
 echo ""

@@ -73,7 +73,12 @@ const record = (row) => appendFileSync(outPath, JSON.stringify(row) + '\n');
  * ------------------------------------------------------------------ */
 
 const actionOf = (a) =>
-  [a.kind, a.role, a.name, a.value ?? '', (a.fill ?? []).map((f) => `${f.label}=${f.value}`).join(',')]
+  // `option` is here for the same reason as everything else: it is persisted,
+  // so leaving it out would narrow the comparison to less than the graph. It
+  // is what replays a select step, and a mode that recorded a different one
+  // would re-enter states differently while looking identical (issue #43).
+  [a.kind, a.role, a.name, a.value ?? '', a.option ?? '',
+   (a.fill ?? []).map((f) => `${f.label}=${f.value}`).join(',')]
     .join('|');
 
 const canon = {
