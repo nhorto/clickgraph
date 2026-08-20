@@ -11,7 +11,16 @@ export interface PageSnapshot {
   elements: ElementDescriptor[];
   nodeId: string;
   fingerprint: ReturnType<typeof computeFingerprint>;
-  /** Hash of visible text. Only ever used to detect whether an action did anything. */
+  /**
+   * Hash of visible text, digits and all. Only ever used to detect whether an
+   * action did anything — never compared against another run.
+   *
+   * Not to be confused with `fingerprint.content`, which is the normalised,
+   * persisted, baseline-comparable one (issue #48). Two hashes of the same
+   * string answering two different questions, and the difference is digits: a
+   * click that moves a counter IS an effect, and a counter that has moved
+   * since Tuesday is NOT a change anyone made.
+   */
   contentHash: string;
   /**
    * Hash of geometry and colour. Also only ever used to detect whether an action
@@ -505,7 +514,7 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
   const data = await page.evaluate(extractPageData);
   const url = page.url();
   const elements = data.elements as unknown as ElementDescriptor[];
-  const fingerprint = computeFingerprint(url, data.headings, elements);
+  const fingerprint = computeFingerprint(url, data.headings, elements, data.text);
   return {
     url,
     title: data.title,

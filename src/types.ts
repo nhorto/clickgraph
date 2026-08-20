@@ -154,9 +154,11 @@ export interface Outcome {
  * The identity of a UI state, layered so a mismatch can be explained.
  *
  * `identity` decides node id (coarse: route + headings). `structure` detects
- * shape changes within a node (fine: every interactive control). Separating
- * them is what lets a page gain a button without the screen being reported
- * as a different, unreachable screen.
+ * shape changes within a node (fine: every interactive control). `content`
+ * detects text changes that move neither. Separating them is what lets a page
+ * gain a button without the screen being reported as a different, unreachable
+ * screen — and what lets a screen be reported as reworded without being
+ * reported as rebuilt.
  */
 export interface Fingerprint {
   /** Pathname with numeric/uuid segments collapsed, e.g. /orders/:id */
@@ -165,6 +167,15 @@ export interface Fingerprint {
   identity: string;
   /** Hash of route + headings + interactive controls. A change is reportable. */
   structure: string;
+  /**
+   * Hash of the state's normalised visible text — digits and the walker's own
+   * typed values removed. Reported on change, never part of the node id.
+   *
+   * Optional because a graph written before issue #48 does not carry one, and
+   * a baseline that cannot answer the question must not be made to look as if
+   * it answered "no": `diff` compares this only when both sides have it.
+   */
+  content?: string;
   /** Human-readable anchors for debugging why two states differ. */
   landmarks: string[];
 }
@@ -434,6 +445,7 @@ export type ChangeKind =
   | 'new-state'
   | 'missing-state'
   | 'changed-state'
+  | 'changed-content'
   | 'new-edge'
   | 'missing-edge'
   | 'broken-edge'

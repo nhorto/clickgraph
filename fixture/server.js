@@ -63,6 +63,12 @@
  * trades page loads away — routed re-entry, issue #23 — is invisible on the
  * default fixture and measurable under this.
  *
+ * Run with REWORD=1 to reword every cell of /inventory's table and change
+ * nothing else — no control added, removed or relabelled, no heading touched.
+ * This is the shape `diff` used to call "No change" (issue #48): the screen a
+ * reviewer would fail on sight, and the one every structural signal agrees is
+ * untouched.
+ *
  * Run with EMPTY=1 to omit the only order row from /orders while keeping the
  * /orders/1042 page available by direct address. This simulates an app whose
  * fixture data is missing, making a real screen undiscoverable to the walker.
@@ -87,6 +93,7 @@ const BREAK = process.env.BREAK === '1';
 const EMPTY = process.env.EMPTY === '1';
 const AUTH = process.env.AUTH === '1';
 const CLUSTER = process.env.CLUSTER === '1';
+const REWORD = process.env.REWORD === '1';
 
 const LOGIN_PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
@@ -723,6 +730,66 @@ const routes = {
         window.scrollTo(0, 0);
       });
       // "Share release notes" is intentionally wired to nothing at all.
+    </script>`),
+  /*
+   * The screen of issue #48: everything a walk can hold on to stays exactly
+   * where it was, and every word on it changes.
+   *
+   * The table is the whole point. A control was neither added, removed nor
+   * relabelled, no heading moved, and the interactive count is identical — so
+   * `identity` matches, `structure` matches, and before the content tier every
+   * signal `diff` had agreed that nothing had happened. It reported "No
+   * change. Every walked interaction behaves as it did in the baseline." over
+   * a screen whose every cell had been reworded to nonsense, and that sentence
+   * is what lets a UI change through review.
+   *
+   * The counterweight sits directly above it, and it is the half that
+   * regresses silently. `#stamp` changes on EVERY request with nobody editing
+   * anything: a load time, a request counter, a relative age. That is what
+   * ordinary apps put at the top of ordinary screens, and a text signal that
+   * fires on it is a signal that fires on every run and gets ignored inside a
+   * fortnight. Digits are normalised away for exactly this, so walking this
+   * page twice must stay quiet while REWORD must not — and a check that only
+   * tested the loud half would pass just as well with the normalisation
+   * deleted.
+   *
+   * "Recount" is wired and works, and it works by moving digits only. A click
+   * that changes a displayed number IS an effect, and the within-walk signal
+   * keeps digits precisely so it can see one. The same click must leave the
+   * persisted content hash alone. One control, both instruments, opposite
+   * answers, which is the distinction the fix rests on.
+   *
+   * Deliberately absent from the shared nav, like the other bare pages: a walk
+   * from / must not wander in, or every count in every other scenario moves.
+   */
+  '/inventory': bare('Inventory', `
+    <h1>Inventory</h1>
+    <p id="stamp">&nbsp;</p>
+    <table>
+      <tr><th>Bay</th><th>Progress</th><th>Status</th></tr>
+      <tr><td>Bay 1</td><td>12 of 40 counted</td><td>${REWORD ? 'Nnoo ttrraacckk' : 'On track'}</td></tr>
+      <tr><td>Bay 2</td><td>${REWORD ? '## ooff ## ccoouunntteedd' : '7 of 31 counted'}</td><td>${REWORD ? 'Bbeehhiinndd' : 'Behind'}</td></tr>
+      <tr><td>Bay 3</td><td>${REWORD ? 'nnootthhiinngg ssttaarrtteedd' : 'not started'}</td><td>${REWORD ? 'Iiddllee' : 'Idle'}</td></tr>
+    </table>
+    <p><button id="recount" data-testid="recount">Recount</button></p>
+    <p id="recount-result"></p>
+    <script>
+      // Rendered here rather than by the server, because the routes table is
+      // built once at startup and a stamp minted there would be the same
+      // string all day — which would let a check pass with the digit
+      // normalisation deleted. This one really is different on every load,
+      // which is the only version that tests anything.
+      document.getElementById('stamp').textContent =
+        'Loaded at ' + Date.now() + ' \u00b7 ' + (300 + Date.now() % 97) +
+        ' checks in the last 24 hours';
+
+      // Digits only, on purpose. Within a walk this is an effect and must be
+      // seen as one; across two walks it is noise and must not be reported.
+      let n = 0;
+      document.getElementById('recount').addEventListener('click', () => {
+        n += 1;
+        document.getElementById('recount-result').textContent = 'Recounted ' + (40 + n) + ' items.';
+      });
     </script>`),
   // The app of issue #27: its session lives in sessionStorage, so a Playwright
   // storage state saves nothing of it. Deliberately standalone — no nav, no

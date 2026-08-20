@@ -39,6 +39,14 @@
       "expect": { "match": "Sync" }
     },
     {
+      "id": "about-reworded",
+      "description": "Reword a sentence on /about and change nothing else — no control added, removed or relabelled, no heading touched. Reported as a change, never as a defect: severity info, exit 0. This is the class the fairness rule used to exclude, and the class issue #48 found the tool blind to",
+      "file": "fixture/server.js",
+      "find": "<h1>About</h1><p>Acme, since 1998.</p>",
+      "replace": "<h1>About</h1><p>Acme, a shell company since 1998.</p>",
+      "expect": { "match": "/about changed text", "severity": "info" }
+    },
+    {
       "id": "order-link-inert",
       "description": "The order-detail link keeps its href but preventDefaults the click (same regression BREAK=1 plants)",
       "file": "fixture/server.js",

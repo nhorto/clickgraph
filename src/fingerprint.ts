@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ElementDescriptor, Fingerprint } from './types.js';
+import { FILL_TOKEN } from './formfill.js';
 
 /**
  * State identity.
@@ -59,6 +60,46 @@ export function normalizeText(text: string): string {
     .slice(0, 80);
 }
 
+/**
+ * Normalize a whole page's visible text down to what a release can change on
+ * purpose, and hash that.
+ *
+ * This is NOT `PageSnapshot.contentHash`, and the difference is the whole of
+ * issue #48. That hash is taken twice around a single click to decide whether
+ * the click did anything, so it keeps digits — a control that only moves a
+ * displayed number did something, and calling it dead is the costlier mistake.
+ * This one is written into the graph and compared against a baseline taken on
+ * another day, where the same digits are the noise: a counter, a timestamp, a
+ * "3 minutes ago", an id in a table cell. A within-walk signal and a
+ * baseline-comparable signal are different instruments, and the reason `diff`
+ * could report "No change" over a table whose every cell had been reworded is
+ * that only the first one existed.
+ *
+ * Two things are removed, each for its own reason:
+ *
+ * - **Digits**, because they move without anyone editing the app, and a text
+ *   signal that fires on every run is one nobody will read by the second week.
+ *   The cost is real and is accepted: a currency or count whose *only* change
+ *   is numeric is invisible here. The wording around it is not.
+ * - **The walker's own typed values.** Every synthesized value either carries
+ *   `clickgraph-test` or is pure digits (`1`, `+15555550100`, `2030-01-01`),
+ *   so those two rules between them cover the lot. Without this, a state
+ *   reached by submitting a form renders the token into its own text and a
+ *   `--fill-forms` baseline could never be compared with a walk without it.
+ *   A value the CALLER declared with `--field` is deliberately left in: it is
+ *   their string, it is stable across runs by construction, and a walk that
+ *   changed it changed what it typed into the app.
+ */
+export function normalizeContent(text: string): string {
+  return text
+    .toLowerCase()
+    .split(FILL_TOKEN)
+    .join('')
+    .replace(/\d+/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function sha(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 12);
 }
@@ -67,10 +108,11 @@ export function computeFingerprint(
   url: string,
   headings: string[],
   elements: ElementDescriptor[],
+  text: string,
 ): Fingerprint {
   const route = normalizeRoute(url);
 
-  // Two tiers, deliberately.
+  // Three tiers, deliberately.
   //
   // `identity` answers "is this the same screen?" and is built only from the
   // route and its headings. Adding a button to a page must NOT mint a new
@@ -80,6 +122,17 @@ export function computeFingerprint(
   // `structure` answers "did this screen change shape?" and includes every
   // interactive control. It is an attribute of the node, not part of its id,
   // so a shape change is reported as a change rather than a disappearance.
+  //
+  // `content` answers "did this screen change what it says?" and is the third
+  // tier because it belongs in neither of the other two. Not `identity`, for
+  // the reason above squared: text is the most-edited thing in any app, and a
+  // screen that minted a new node on every copy change would orphan its own
+  // graph weekly. Not `structure` either, and that one is load-bearing —
+  // `structure` is what routed re-entry compares on arrival to decide it is
+  // back where it meant to be (issue #23), and what effect detection compares
+  // across a click. Folding text into it would make a page with a clock
+  // unroutable and make every re-render an "effect". Three questions, three
+  // hashes, each answerable on its own.
   const identityParts = headings.map((h) => normalizeText(h)).sort();
   const structureParts = [
     ...identityParts.map((h) => `h:${h}`),
@@ -90,6 +143,7 @@ export function computeFingerprint(
     route,
     identity: sha(`${route}|${identityParts.join('|')}`),
     structure: sha(`${route}|${structureParts.join('|')}`),
+    content: sha(normalizeContent(text)),
     landmarks: headings.slice(0, 5).map((h) => h.trim()).filter(Boolean),
   };
 }

@@ -86,9 +86,25 @@ was caught; anything else exits 1 so CI can gate on it.
   it as an issue before touching the code.
 - A **STALE** mutation means the target file drifted; update the `find` string.
 - Keep mutations *fair*: only break things the README claims clickgraph can
-  see. A mutation that changes copy ("Refreshed" → a lie) tests semantics the
-  tool explicitly does not judge; documented blind spots live in the README,
-  not here.
+  see. A mutation that changes copy to something **semantically** wrong
+  ("Refreshed" → a lie that still reads as English) tests judgment the tool
+  does not have; documented blind spots live in the README, not here.
+
+  This rule was drawn one notch too wide, and it cost months. "Does the tool
+  judge this copy?" and "does the tool notice this copy changed?" are different
+  questions, and excluding the first quietly excluded the second — so no
+  mutation ever reworded anything, and nobody found out until a real app
+  reworded every cell of a table and `diff` answered **"No change"** (issue
+  #48). Noticing is fair game and always was. Judging is not.
+
+- `expect.severity` says which list the finding has to land in. Default
+  `"regression"`: the diff must exit 1 and name it. `"info"`: the diff must
+  exit **0** and report it under `other` — the tool is right to say the screen
+  changed and wrong to call it a defect.
+
+  Both are detection, and a harness that only counts regressions will report
+  perfect sensitivity to the only thing it can see. That is exactly how the gap
+  above stayed invisible to a file whose entire job is finding gaps.
 
 When an external replay target is vetted, give it a mutation file too —
 planted bugs in a real app's DOM are worth more than the same bugs in the

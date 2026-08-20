@@ -44,9 +44,10 @@ Regressions (1)
   • new control does not work: button "Archive" on /orders → no-effect
     no navigation, no state change, no network traffic
 
-Other changes (2)
+Other changes (3)
   • /orders changed shape: 2 control(s) added
   • new interaction: button "Print invoice" on /orders → network-only
+  • /settings changed text: same controls, different words
 ```
 
 Exit codes: `0` no regressions, `1` regressions found, `2` usage/runtime error — so an agent or CI can gate on it.
@@ -86,18 +87,30 @@ cp -r skill/clickgraph ~/.claude/skills/clickgraph
 3. **Graph.** Nodes are UI states, edges are actions with their observed outcome, written to `.uigraph/graph.json` — a repo artifact that diffs in review like any other file.
 4. **Diff.** Re-walk and compare. A control that worked and now does nothing is a regression; a control that never existed and does nothing on arrival is a regression too — that is the tracer bullet firing.
 
-### Two-tier state identity
+### Three-tier state identity
 
-The hard problem (see [RESEARCH.md](RESEARCH.md)) is deciding whether two screens are "the same state". This is handled in two tiers:
+The hard problem (see [RESEARCH.md](RESEARCH.md)) is deciding whether two screens are "the same state". This is handled in three tiers:
 
 - **identity** = route + *visible* headings → decides node id.
 - **structure** = identity + every interactive control → detects shape changes.
+- **content** = the screen's normalised visible text → detects wording changes.
 
 Keeping structure *out* of the node id is what lets a page gain a button without the screen being reported as a different, unreachable screen. Without this split, every ordinary UI change orphans the graph and the tool cries wolf on its author's own work — the failure mode that killed the previous generation of these tools.
 
 **Known limitation, stated plainly:** two genuinely different screens sharing a route *and* their headings collapse into one node. v1 errs toward under-splitting, because a missed split is quieter than a graph that resets every commit.
 
 Only headings the user can actually see are counted. An SPA that keeps every screen mounted and reveals one at a time otherwise hands the same heading list to all of them, which collapses the whole app to a single node and still exits 0 (issue #25). The cost of counting only what is on screen is that a screen with no visible heading is identified by its route alone — accepted, because the remaining tie-breakers are the ones `structure` already carries for the express reason that they move on every ordinary UI edit.
+
+**The content tier exists because every other signal moves only when a control does.** Reword every cell of a table and add, remove and rename nothing: the route matches, the headings match, the control list matches, the count matches — and `diff` answered `No change. Every walked interaction behaves as it did in the baseline.` over a screen whose every cell now said something wrong (issue #48). That sentence is the gate that lets a UI change land, so a screen that changed and a screen that did not have to be distinguishable. It catches a status label that stopped rendering, an empty-state sentence silently blanked, a cell showing a placeholder because the field behind it was renamed.
+
+Two things are normalised away before hashing, each buying quiet at a stated price:
+
+- **Digits**, because a counter, a clock and a "3 minutes ago" change with nobody editing anything, and a signal that fires on every run gets ignored by the second week. The price: a count or a currency whose *only* change is numeric is invisible here. The wording around it is not.
+- **The walker's own typed values**, so a `--fill-forms` walk can be compared with one without it. A value *you* declared with `--field` stays in — it is your string, and a walk that changed it changed what it typed into your app.
+
+Reported as an **info** change, not a regression, and reported only when `structure` is unchanged. Both follow the rule one line up: if adding or removing a control is not a defect here, changing a word cannot be, and a screen already reported as changed shape does not need to be reported twice. What was broken was the silence, not the exit code.
+
+A baseline written before this existed carries no content hash, and `diff` says nothing about text it never measured rather than flagging every state at once on the first run after an upgrade. Re-walk the baseline and the signal starts working.
 
 ## Apps behind a login
 
