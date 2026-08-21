@@ -210,6 +210,15 @@ the request that failed was a 404 the app handles on purpose. The tool already
 filters known-benign cases, but it works from the outside and cannot read
 intent.
 
+**`state-changed` is weaker evidence than `no-effect`.** A finding says the tool
+saw nothing; a pass says it saw *something*, and something is easy to come by.
+Transient overlays are the case that bit hardest — a tooltip raised by the
+walk's own pointer used to read as the button's effect, so every tooltipped icon
+button passed whether or not it was wired to anything. Overlays carrying
+`role="tooltip"` are excluded now, but a library that mounts one without that
+role will still vouch for a dead button. If a user asks whether a specific
+control works, read its handler; do not rest it on a `state-changed` edge alone.
+
 **Destructive controls are skipped, not tested.** Delete, sign out, pay and
 similar are refused by default and reported as skipped. Do not report them as
 working, and do not reach for `--allow-dangerous` unless the user has said the

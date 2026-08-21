@@ -12,6 +12,8 @@ import {
   ActionWatch, captureState, classifyOutcome, compareScroll, instrumentChromeEffects,
   readScrollPositions, resolve,
   type PageSnapshot,
+  overlayAddsInformation,
+  revealedOverlay,
 } from './observer.js';
 import { normalizeRoute, normalizeText } from './fingerprint.js';
 import { fieldSpec, refusesFill, synthesize } from './formfill.js';
@@ -1360,8 +1362,21 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             if (compareScroll(scrollAfter, hoverScrollBefore) !== 'same') {
               await settle(page, config.settleMs);
               hoverScrollBefore = await readScrollPositions(page);
-              hoverBefore = await captureState(page);
             }
+            // Re-read the page with the pointer OFF the control, always — not
+            // only when the scroll moved. `after` was captured while the
+            // pointer still sat on it, so anything the pointer itself put
+            // there is in both snapshots and the probe compares a tooltip
+            // against itself.
+            //
+            // This was invisible until overlays became their own signal
+            // (issue #61). The glossary dashboard this probe was written for
+            // happened to work anyway, because clicking those tiles toggled
+            // the tooltip SHUT — so the two snapshots did differ, for a reason
+            // particular to that app. A control that merely keeps its tooltip
+            // up under the pointer was never actually tested.
+            await settle(page, config.settleMs);
+            hoverBefore = await captureState(page);
           } catch {
             /* the probe below fails for the same reason and keeps the click result */
           }
@@ -1379,6 +1394,23 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
             hoverBefore, afterHover,
             { ...hoverObserved, scrolled: compareScroll(hoverScrollBefore, hoverScrollAfter) },
             el,
+            // The one place a tooltip is the answer rather than the noise
+            // (issue #61). Everywhere else an overlay is excluded, because the
+            // pointer arriving is not the app responding; here the pointer
+            // arriving is the whole test.
+            //
+            // But only when the tooltip SAYS something. Otherwise the fix for
+            // #61 just moves the hole: a dead button carrying `title` or
+            // `aria-describedby` has hoverAffordance, so the probe runs, and
+            // its own decorative tooltip vouches for it exactly as it used to.
+            // Measured, not assumed — a button wired to nothing with the
+            // tooltip "Sync now" came back `state-changed` through this path.
+            {
+              countOverlays: overlayAddsInformation(
+                revealedOverlay(hoverBefore.overlayText, afterHover.overlayText),
+                el.name,
+              ),
+            },
           );
           if (hoverOutcome.kind !== 'no-effect') {
             action.kind = 'hover';

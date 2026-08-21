@@ -14,7 +14,9 @@
  * Mutations are literal find/replace edits so they read at a glance and fail
  * loudly when the target file drifts (a mutation whose `find` no longer
  * matches is reported as stale, never silently skipped). Files are restored
- * byte-for-byte after every mutation, pass or fail.
+ * byte-for-byte after every mutation, pass or fail — and after a run that was
+ * KILLED mid-mutation, which the `finally` alone cannot do and which silently
+ * corrupted the next run's baseline twice before it was handled.
  *
  * `expect.severity` says which list the finding belongs in — 'regression' by
  * default, or 'info' for a change the tool is right to report and wrong to
@@ -49,6 +51,58 @@ const {
 } = config;
 if (!name || !url || !serve) fail('mutations config needs at least name, url, serve');
 if (mutations.length === 0) fail('no mutations defined');
+
+/**
+ * The mutation currently applied to disk, so it can be undone by something
+ * other than the `finally` below.
+ *
+ * That `finally` is not enough, and the gap is not theoretical — it corrupted
+ * two runs in one afternoon. A mutation is a live edit to a real checkout, and
+ * `finally` does not run when the process dies of a signal. Kill a run mid
+ * mutation and the edit stays applied; the NEXT run then walks its "clean"
+ * baseline against an app that is already broken, and nothing announces it.
+ * That is the worst shape a harness bug can take — the run completes, prints a
+ * tally, and every number in it is measured against the wrong baseline.
+ *
+ * The marker is a file rather than a variable because SIGKILL and a pulled
+ * plug cannot be trapped at all, so recovery has to survive the process, not
+ * just its exit path.
+ */
+const inflightPath = join(evalDir, '.work', `inflight-${name}.json`);
+
+function markInflight(filePath, original) {
+  ensureDir(join(evalDir, '.work'));
+  writeFileSync(inflightPath, JSON.stringify({ file: filePath, original }));
+}
+function clearInflight() {
+  if (existsSync(inflightPath)) rmSync(inflightPath);
+}
+
+// Recover from a previous run that was killed while a mutation was applied.
+if (existsSync(inflightPath)) {
+  try {
+    const held = JSON.parse(readFileSync(inflightPath, 'utf8'));
+    writeFileSync(held.file, held.original);
+    console.log(`recovered: a previous run was killed with a mutation still applied to`);
+    console.log(`  ${held.file}`);
+    console.log(`  it has been restored, so this run's baseline is the real app again\n`);
+  } catch (err) {
+    fail(`found ${inflightPath} but could not restore from it: ${err.message}`);
+  }
+  clearInflight();
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    if (existsSync(inflightPath)) {
+      const held = JSON.parse(readFileSync(inflightPath, 'utf8'));
+      writeFileSync(held.file, held.original);
+      clearInflight();
+      console.log(`\ninterrupted — restored ${held.file}`);
+    }
+    process.exit(130);
+  });
+}
 
 const onlyFlag = process.argv.indexOf('--only');
 const only = onlyFlag !== -1 ? process.argv[onlyFlag + 1] : null;
@@ -115,6 +169,7 @@ for (const [i, m] of selected.entries()) {
   }
 
   try {
+    markInflight(filePath, original);
     writeFileSync(filePath, original.split(m.find).join(m.replace));
     const reason = rebuild();
     if (reason) {
@@ -181,6 +236,7 @@ for (const [i, m] of selected.entries()) {
     });
   } finally {
     writeFileSync(filePath, original);
+    clearInflight();
   }
 }
 // Leave the app the way we found it even for the build artifacts.

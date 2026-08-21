@@ -466,12 +466,25 @@ Walked three real codebases, which found bugs the fixture never could. Current r
 Runs that stop at a budget say so and report what they never reached, rather
 than implying they covered everything.
 
-Every false positive those runs exposed is now fixed, and each fix is a rule worth keeping:
+Every miscall those runs exposed is now fixed, and each fix is a rule worth
+keeping. Most were working controls reported as broken; a few — the empty
+report from a 502ing app, the tooltip below — were the costlier direction, a
+walk that came back clean because it could not see the defect:
 
 - **A broken app must not walk clean.** App Atlas's UI was 502ing on every API call; it rendered no buttons, so there was nothing to click, so the report was empty and the exit code was 0. Entry-page health is now recorded and reported first.
 - **Not every 4xx is a defect.** An endpoint that answers 404 to mean "this optional thing does not exist" is not a bug when the app handles it. 5xx and uncaught exceptions still fail; a 4xx with *nothing visible happening* still fails, because that silent failure is real.
 - **Already-active controls are not dead controls.** A link to the current page, or the tab already selected.
-- **Some controls answer to hover, not click.** A dashboard of glossary terms opened tooltips on `pointerenter` while the click handler toggled them shut — sixteen working tiles read as dead. Probing hover requires moving the pointer away first, or you re-hover an element the mouse never left and test nothing.
+- **Some controls answer to hover, not click.** A dashboard of glossary terms
+  opened tooltips on `pointerenter` while the click handler toggled them shut —
+  sixteen working tiles read as dead. Probing hover requires moving the pointer
+  away first, or you re-hover an element the mouse never left and test nothing.
+  The half of that which went missing for months: the *baseline* has to be
+  re-read once the pointer is away too. It was still the snapshot taken with
+  the pointer sitting on the control, so the probe compared a tooltip against
+  itself. That stayed invisible because on this very dashboard the click
+  toggled the tooltip shut — the snapshots differed, for a reason particular to
+  that app. A control that merely keeps its tooltip up under the pointer was
+  never actually being tested (issue #61).
 - **A control that opens a panel does nothing once that panel is open.** Only visible after the walk finishes: the button is recognizable as already-open from the edge that opened it. This also settles the nav-item case — a link to the view you are on is inert whether or not it carries `aria-current`.
 - **Controls that answer to typing cannot be verified by clicking.** A `<select>` answers to choosing an option; a text field answers to typing. Clicking either changes nothing, so before this every search box and form field in an app read as a dead control. Selects are now walked by choosing an option they are not already showing. Text fields are only typed into as part of their form.
 - **The tool has to be able to find its own controls again.** A third of the controls on a real dashboard could not be resolved by the selector recorded for them seconds earlier, on the same page, with nothing changed — because the name recorded here comes from the DOM and Playwright's comes from the accessible-name algorithm, and the two disagree over decorative content, CSS `text-transform` and `title` attributes. Chasing that algorithm is a losing game; every element now carries a verified structural path to fall back to. On that dashboard it took a walk from 60 interactions to 77, and from 220 seconds to 108.
@@ -493,6 +506,43 @@ Every false positive those runs exposed is now fixed, and each fix is a rule wor
   into class names, so including controls would report an effect for every click
   ever made. The same signal covers step rails, progress bars and a tab
   underline drawn on a div.
+- **A tooltip is not an effect.** Playwright hovers a control before it clicks
+  it, so by the time the "after" snapshot is taken the tooltip is up. That is a
+  real DOM change: its text lands in `innerText`, its popper carries a
+  transform, and it is a non-control element with a class. Three of the four
+  effect signals fire, so a button wired to *nothing* was classified
+  `state-changed` exactly as a working one was — and every tooltipped icon
+  button in every MUI, Radix, Ant or Chakra app read as working, always
+  (issue #61). This is the class-attribute case one level up: the library
+  expressing that same pointer feedback as a whole *element* rather than as a
+  class name, so the rule above had already anticipated the family and covered
+  half of it. Transient overlays are keyed on `role="tooltip"`, which is what
+  the ARIA spec says and what all four of those libraries emit; a list of
+  `.MuiTooltip-popper`-style class names would rot, and would miss every library
+  not on it. The counterweight is the whole difficulty — a control whose only
+  job is revealing a tooltip is a real control — so overlays stay observable as
+  a signal of their own, and the hover probe is the one caller that counts them.
+  Everywhere else the pointer arriving is not the app responding.
+- **A tooltip that only repeats a label vouches for nothing.** The fix above
+  leaks on its own terms, which a probe found rather than a hunch: a dead
+  button carrying `title` or `aria-describedby` has `hoverAffordance`, so the
+  hover probe runs on it, and the probe is the one caller that counts overlays
+  — so its decorative tooltip vouched for it exactly as before. A button wired
+  to nothing whose tooltip read "Sync now" came back `state-changed` through
+  that door. What makes this hard is that there is **no structural difference**
+  between the two cases: a glossary term whose definition is the feature and an
+  icon button with a decorative label are both "the pointer arrives and a
+  `role="tooltip"` appears". The only thing that differs is what the tooltip
+  *says*, so a content test is not a shortcut here — it is the sole axis that
+  carries the distinction. An overlay counts as an effect only if it adds at
+  least two words the control's own name does not have; one is not enough,
+  because "Delete permanently" on a button named "Delete" is an elaborated
+  label rather than a definition. Both directions of error survive and neither
+  is silent: a hover-driven control whose tooltip merely restates its name
+  reads as dead (it is also, by construction, telling the user nothing), and a
+  dead button with a chatty tooltip — "Coming soon" — still passes, because
+  that is a deliberate message from the app and calling it a defect from the
+  outside would be a guess in the other direction.
 - **The walk scrolls to reach a control, and must not take credit for it.**
   Playwright's click auto-scrolls its target, so a reading taken across that
   scroll calls every control below the fold a working scroller — and because the
