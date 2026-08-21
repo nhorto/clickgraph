@@ -77,6 +77,12 @@
  *      registry" beside it is what proves a surviving walk still did its job
  *      rather than swallowing the page.
  *
+ *  20. /toolbar — three controls behind tooltips: one dead, one working, one
+ *      whose only effect IS the tooltip. A hovered tooltip is a real DOM
+ *      change, so the dead one used to read exactly like the working one
+ *      (issue #61), and any fix that ignores tooltips outright turns the third
+ *      back into a dead control.
+ *
  * Run with REWORD=1 to reword every cell of /inventory's table and change
  * nothing else — no control added, removed or relabelled, no heading touched.
  * This is the shape `diff` used to call "No change" (issue #48): the screen a
@@ -775,6 +781,85 @@ const routes = {
         window.scrollTo(0, 0);
       });
       // "Share release notes" is intentionally wired to nothing at all.
+    </script>`),
+  /*
+   * The screen of issue #61: three controls behind tooltips.
+   *
+   * Playwright hovers a control before it clicks it, so by the time the after
+   * snapshot is taken the tooltip is up. That is a real DOM change — its text
+   * is in `innerText`, its popper carries a transform, and it is a non-control
+   * element with a class — so three of the four effect signals fired and a
+   * button wired to NOTHING was classified `state-changed` exactly as a
+   * working one was. Every tooltipped icon button in every MUI, Radix, Ant or
+   * Chakra app read as working, always.
+   *
+   * All three controls are needed and none is decoration:
+   *
+   *   "Refresh"  is dead, and behind a tooltip. The finding that used to be
+   *              invisible, and the reason the issue exists.
+   *   "Add row"  works, and is behind an identical tooltip. Without it a fix
+   *              that simply ignored tooltipped controls would pass.
+   *   "Bay?"     does nothing on click and everything on hover: its only
+   *              effect IS the tooltip. This is the case that makes the fix
+   *              hard rather than easy — excluding overlays everywhere would
+   *              trade this issue's false negative for its exact opposite, and
+   *              turn a dashboard of glossary terms back into dead controls.
+   *   "Sync now" is dead, and is where the first fix for this issue still
+   *              leaked. It carries `aria-describedby`, so hoverAffordance is
+   *              true, so the hover probe runs — and the probe is the one
+   *              caller that counts overlays, so its own decorative tooltip
+   *              vouched for it exactly as before. Its tooltip restates its
+   *              label and says nothing else, which is the ONLY thing that
+   *              tells it apart from "Bay?": both are "pointer arrives, a
+   *              role=tooltip appears", and no structural signal separates
+   *              them.
+   *
+   * The tooltip is mounted at the end of the document with role="tooltip",
+   * positioned with a transform and carrying a class, which is what MUI, Radix
+   * and the rest all emit. Keyed on the role, never on a library's class name.
+   */
+  '/toolbar': bare('Toolbar', `
+    <h1>Toolbar</h1>
+    <p>
+      <button id="tb-refresh" data-testid="tb-refresh" aria-label="Refresh view">R</button>
+      <button id="tb-add" data-testid="tb-add" aria-label="Add row">+</button>
+      <button id="tb-gloss" data-testid="tb-gloss" aria-label="What is a bay"
+              aria-describedby="tb-gloss-tip" style="cursor: help">Bay?</button>
+      <button id="tb-sync" data-testid="tb-sync" aria-label="Sync now"
+              aria-describedby="tb-sync-tip">S</button>
+    </p>
+    <ul id="tb-rows"><li>row #1</li></ul>
+    <div id="tb-poppers"></div>
+    <script>
+      function tip(el, text) {
+        el.addEventListener('pointerenter', () => {
+          const p = document.createElement('div');
+          p.setAttribute('role', 'tooltip');
+          p.id = el.id + '-tip';
+          p.className = 'tip-popper';
+          p.style.transform = 'translate(10px, 20px)';
+          p.textContent = text;
+          p.dataset.for = el.id;
+          document.getElementById('tb-poppers').appendChild(p);
+        });
+        el.addEventListener('pointerleave', () => {
+          for (const p of document.querySelectorAll('[role="tooltip"][data-for="' + el.id + '"]')) {
+            p.remove();
+          }
+        });
+      }
+      tip(document.getElementById('tb-refresh'), 'Refresh the view');
+      tip(document.getElementById('tb-add'), 'Add a row');
+      tip(document.getElementById('tb-gloss'), 'A bay is a numbered storage location.');
+      tip(document.getElementById('tb-sync'), 'Sync now');
+      // "Refresh view" and "Sync now" are intentionally wired to nothing at
+      // all, and "Bay?" has no click handler by design — its whole job is the
+      // tooltip.
+      document.getElementById('tb-add').addEventListener('click', () => {
+        const li = document.createElement('li');
+        li.textContent = 'row #' + (document.querySelectorAll('#tb-rows li').length + 1);
+        document.getElementById('tb-rows').appendChild(li);
+      });
     </script>`),
   /*
    * The screen of issue #55: a form with a field named `id`.

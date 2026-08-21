@@ -33,6 +33,9 @@
 #      removed is still reported as gone
 #   AA a form with a field named `id` does not kill the walk, and the dead
 #      control beside it is still found
+#   AB a tooltip raised by the pointer is not an effect, a tooltip that is a
+#      control's whole job still is, and a tooltip that only repeats a label
+#      vouches for nothing
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1747,6 +1750,70 @@ node -e '
   if (bad) fail(`an element was stringified into the graph: ${bad[0]}`);
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "and the walk still finds the dead control beside it, with no element stringified in"
+
+
+echo "AB: a tooltip is not proof that a button works (issue #61)"
+# Playwright hovers a control before it clicks it, so the tooltip is up in the
+# after snapshot whether or not the handler did anything. Its text is in
+# innerText, its popper carries a transform, and it is a non-control element
+# with a class — three of the four effect signals — so a button wired to
+# NOTHING was classified state-changed exactly as a working one was. Found by
+# the mutation harness on react-admin, where it missed two of four planted bugs
+# by itself.
+#
+# The fourth control is where the first fix for it still leaked: excluding
+# overlays everywhere would call a glossary term dead, so the hover probe still
+# counts them — which hands a dead button carrying aria-describedby the exact
+# same free pass through a different door.
+start_fixture PORT="$PORT"
+rm -f /tmp/clickgraph-toolbar.json
+node dist/cli.js walk "$URL/toolbar" --quiet --max-depth 1 \
+  --out /tmp/clickgraph-toolbar.json >/tmp/clickgraph-toolbar.txt 2>&1
+check "$?" "0" "a walk of three controls behind tooltips succeeds"
+node -e '
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const g = require("/tmp/clickgraph-toolbar.json");
+  const edge = (re) => g.edges.find((e) => re.test(e.action?.selector?.label ?? ""));
+
+  // The finding that used to be invisible.
+  const dead = edge(/Refresh view/);
+  if (!dead) fail("the dead control was not walked at all");
+  if (dead.outcome.kind !== "no-effect")
+    fail(`a button wired to nothing came back ${dead.outcome.kind} — the tooltip is being read as its effect`);
+
+  // Behind an IDENTICAL tooltip, and working. Without this a fix that simply
+  // ignored tooltipped controls, or stopped trusting them, would pass every
+  // other check here while deleting real findings.
+  const live = edge(/Add row/);
+  if (!live) fail("the working control was not walked");
+  if (live.outcome.kind !== "state-changed")
+    fail(`the working control behind the same tooltip came back ${live.outcome.kind}`);
+
+  // The counterweight, and the reason this fix is not simply "ignore
+  // tooltips": this control does nothing on click and everything on hover, so
+  // the tooltip IS its effect. Excluding overlays everywhere would turn a
+  // dashboard of glossary terms back into dead controls, which is the exact
+  // false positive the hover probe was written to remove.
+  const gloss = edge(/What is a bay/);
+  if (!gloss) fail("the hover-only control was not walked");
+  if (gloss.outcome.kind === "no-effect")
+    fail("a control whose only effect is its tooltip was called dead — the overlay signal is not reaching the hover probe");
+  if (gloss.action.kind !== "hover")
+    fail(`the hover-only control was recorded as a ${gloss.action.kind}, so the probe did not run`);
+
+  // Where the first fix for this issue still leaked. This button is dead, but
+  // it carries aria-describedby, so hoverAffordance is true, so the hover
+  // probe runs — and the probe is the one caller that counts overlays. Its own
+  // decorative tooltip vouched for it exactly as before the fix. The only
+  // thing separating it from "What is a bay" above is what its tooltip SAYS:
+  // both are "pointer arrives, a role=tooltip appears", and no structural
+  // signal tells them apart.
+  const leak = edge(/Sync now/);
+  if (!leak) fail("the tooltip-labelled dead control was not walked");
+  if (leak.outcome.kind !== "no-effect")
+    fail(`a dead button came back ${leak.outcome.kind} — its own tooltip is vouching for it through the hover probe`);
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "the dead one is found, the working one is not blamed, the hover-only one still counts, and a decorative tooltip vouches for nobody"
 
 
 echo ""

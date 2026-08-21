@@ -30,7 +30,7 @@
       "find": "        setTheme(theme === 'dark' ? 'light' : 'dark');",
       "replace": "        /* mutation: handler unwired */",
       "expect": {
-        "match": "theme"
+        "match": "Toggle light/dark"
       }
     },
     {

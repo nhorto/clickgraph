@@ -225,6 +225,48 @@ The first react-admin run had exactly this problem, and it is also how
 from a walk of a *different* commit, and the harness's own baseline never
 walked them.
 
+### A killed run leaves the app broken, and the next run will not tell you
+
+A mutation is a live edit to a real checkout. `mutate.mjs` restores it in a
+`finally`, which covers every way the run can *finish* — and none of the ways
+it can be *killed*, because `finally` does not run when a process dies of a
+signal.
+
+The failure this produces is the worst shape a harness bug can take. The
+mutation stays applied; the next run walks its "clean" baseline against an app
+that is already broken; the run then completes normally and prints a confident
+tally in which every number is measured against the wrong baseline. Nothing
+announces it. It cost two runs in one afternoon before a `STALE` that made no
+sense gave it away — the `find` string was missing because the previous kill
+had already replaced it.
+
+Handled in two places, because one is not enough:
+
+- Signal handlers for `SIGINT`/`SIGTERM`/`SIGHUP` restore and exit 130.
+- An **in-flight marker file** written before each mutation and cleared after
+  it. On startup, a marker that still exists means the last run was killed, and
+  the file it names is restored before anything else happens. This is the one
+  that matters: `SIGKILL` and a pulled plug cannot be trapped at all, so
+  recovery has to survive the process rather than ride on its exit path.
+
+If you kill a run by hand, expect `recovered: a previous run was killed …` on
+the next start. Seeing that message is the system working. Not seeing it after
+a hard kill is worth investigating, not shrugging at.
+
+### `expect.match` is a claim about the report's wording
+
+The matcher is a case-insensitive regex over each reported finding's summary
+and detail, so it is only as good as your guess at what the control is *called*
+in the report. `theme-toggle-dead` was written with `match: "theme"` and read
+as MISSED for exactly as long as that guess went unchecked — the tool had
+caught it every time, and reported it under the control's real accessible name,
+`Toggle light/dark mode`.
+
+A miss whose "flagged something else" list contains the planted bug under
+another name is a matcher bug, not a detection gap. Read that list before
+filing an issue against the walker. Prefer the control's accessible name over a
+word from the source: the report is written from the DOM, not from the diff.
+
 ## The cadence
 
 - **After any detection change** (walker, observer, fingerprint, graph diff):

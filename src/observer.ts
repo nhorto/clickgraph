@@ -57,6 +57,23 @@ export interface PageSnapshot {
    * selected highlight on a custom list item.
    */
   classHash: string;
+  /**
+   * Hash of transient hover/focus overlays — tooltips and their poppers.
+   *
+   * Excluded from every other signal, and kept here so it can still be asked
+   * for where it is the answer rather than the noise: the hover probe. A click
+   * that only raised a tooltip did nothing (issue #61); a hover that raised one
+   * did exactly what that control is for.
+   */
+  overlayHash: string;
+  /**
+   * The overlays' visible text, unhashed.
+   *
+   * Needed because the hover probe has to ask a question a hash cannot answer:
+   * whether a tooltip SAYS anything the control's own name does not (issue
+   * #61). Short by nature — a tooltip that is a paragraph is not a tooltip.
+   */
+  overlayText: string;
 }
 
 /**
@@ -431,10 +448,48 @@ function extractPageData() {
     .map((h) => (h.textContent || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 
+  // Transient hover/focus overlays — tooltips and the poppers libraries mount
+  // for them — kept apart from every other signal below.
+  //
+  // Playwright hovers a control before it clicks it, so by the time the "after"
+  // snapshot is taken the tooltip is up. That is a real DOM change: its text
+  // lands in `innerText`, its popper carries a transform, and it is a
+  // non-control element with a class. Three of the four effect signals fire, so
+  // a button wired to NOTHING was classified `state-changed` exactly as a
+  // working one was — and every tooltipped icon button in every MUI, Radix,
+  // Ant or Chakra app read as working, always (issue #61).
+  //
+  // `classHash` already excludes the controls themselves for the same
+  // underlying reason: a click puts hover and focus on its target, and
+  // component libraries mirror both into class names. A tooltip is that exact
+  // phenomenon one level up — the library expressing the same feedback as a
+  // whole ELEMENT rather than as a class — so the existing rule anticipated
+  // this family and covered only half of it.
+  //
+  // Keyed on `role="tooltip"`, which is what the ARIA spec says and what every
+  // one of those libraries emits. Deliberately not a list of `.MuiTooltip-
+  // popper`-style class names: that would rot, and would miss every library
+  // not on it.
+  const overlays = Array.from(document.querySelectorAll('[role="tooltip"]'));
+  const inOverlay = (el: any) => overlays.some((o) => o === el || o.contains(el));
+
   // Visible text, used only to decide whether a click had any effect. Digits are
   // kept deliberately: a click that only changes a displayed number DID do
   // something, and calling that control dead is the costlier mistake.
-  const text = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
+  //
+  // Overlay text is subtracted rather than the whole string being rebuilt from
+  // a tree walk, because `innerText` has visibility and line-break semantics
+  // that are the reason it is used here, and reimplementing them to gain
+  // precision would change every existing fingerprint. The cost is bounded and
+  // worth naming: a tooltip whose text exactly matches a control's label
+  // removes that label from this signal too. `structure` still carries it as
+  // `role:name`, so nothing is lost that no other signal holds.
+  let text = (document.body.innerText || '').replace(/\s+/g, ' ').trim();
+  for (const o of overlays) {
+    const t = ((o as any).innerText || '').replace(/\s+/g, ' ').trim();
+    if (t) text = text.split(t).join('');
+  }
+  text = text.replace(/\s+/g, ' ').trim();
 
   // Geometry and colour, for the effects the two signals above cannot see.
   //
@@ -467,7 +522,10 @@ function extractPageData() {
   // A transform is how the whole web moves things without touching layout:
   // canvas zoom and pan, drawers, carousels, drag. Reading them wherever they
   // are declared catches the family, not one library's spelling of it.
+  // A popper is positioned with a transform, so an overlay would otherwise move
+  // the visual signal every time the pointer landed on a control.
   const transforms = Array.from(document.querySelectorAll('[style*="transform"]'))
+    .filter((el) => !inOverlay(el))
     .map((el: any) => el.style.transform)
     .filter(Boolean);
 
@@ -532,13 +590,30 @@ function extractPageData() {
   // read directly rather than trusted to be one.
   const controls = new Set(Array.from(document.querySelectorAll(INTERACTIVE)));
   const classes = Array.from(document.querySelectorAll('[class]'))
-    .filter((el) => !controls.has(el))
+    .filter((el) => !controls.has(el) && !inOverlay(el))
     .map((el) =>
       (el.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean).sort().join(' '),
     )
     .join('|');
 
-  return { title: document.title, headings, elements, text, visual, formState, classes };
+  // The overlays' own content, kept so the thing excluded above is still
+  // OBSERVABLE where it is the point rather than the noise. A control whose
+  // only job is to reveal a tooltip is a real control — a dashboard of glossary
+  // terms is the case the hover probe exists for — and a fix that made those
+  // read as dead would have traded this issue's false negative for its exact
+  // opposite.
+  const overlayTexts = overlays
+    .map((o: any) => (o.innerText || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const overlay = overlays
+    .map((o: any) => `${(o.innerText || '').replace(/\s+/g, ' ').trim()}#${o.getAttribute('class') ?? ''}`)
+    .sort()
+    .join('|');
+
+  return {
+    title: document.title, headings, elements, text, visual, formState, classes,
+    overlay, overlayText: overlayTexts.sort().join(' \u00b7 '),
+  };
 }
 /* c8 ignore stop */
 
@@ -558,6 +633,8 @@ export async function captureState(page: Page): Promise<PageSnapshot> {
     visualHash: createHash('sha256').update(data.visual).digest('hex').slice(0, 12),
     formStateHash: createHash('sha256').update(data.formState).digest('hex').slice(0, 12),
     classHash: createHash('sha256').update(data.classes).digest('hex').slice(0, 12),
+    overlayHash: createHash('sha256').update(data.overlay).digest('hex').slice(0, 12),
+    overlayText: data.overlayText,
   };
 }
 
@@ -787,6 +864,68 @@ export class ActionWatch {
   }
 }
 
+/**
+ * Words too common to count as something a tooltip told you.
+ *
+ * Deliberately tiny. This is not stopword removal for its own sake — it exists
+ * so that "Refresh the view" on a button named "Refresh view" scores as the
+ * label it is, rather than as one word of new information.
+ */
+const OVERLAY_FILLER = new Set([
+  'a', 'an', 'the', 'to', 'of', 'for', 'in', 'on', 'at', 'and', 'or', 'is',
+  'are', 'be', 'this', 'that', 'it', 'its', 'you', 'your', 'with', 'from',
+]);
+
+/**
+ * Does this overlay tell you something the control's own name does not?
+ *
+ * The question exists because there is NO structural difference between the two
+ * cases the hover probe has to separate (issue #61). Both are "the pointer
+ * arrives and a `role="tooltip"` appears":
+ *
+ *   - A glossary term whose definition IS the feature. Working. Reporting it
+ *     dead is the false positive the hover probe was written to remove.
+ *   - An icon button with a decorative tooltip that restates its label, wired
+ *     to nothing. Broken, and silently passing before this.
+ *
+ * The DOM is identical in both. The only thing that differs is what the tooltip
+ * SAYS, so a content test is not a shortcut here — it is the sole axis that
+ * carries the distinction, and no amount of looking harder at structure will
+ * produce another one.
+ *
+ * The rule: count the words the tooltip adds beyond the control's name, and
+ * require at least two. One is not enough — "Delete permanently" on a button
+ * named "Delete" is an elaborated label, not a definition.
+ *
+ * Both directions of error are real and neither is silent:
+ *   - A genuinely hover-driven control whose tooltip only restates its name
+ *     gets reported dead. It is also, by construction, telling the user
+ *     nothing, so this is a thin case.
+ *   - A dead button with a chatty tooltip ("Coming soon") still passes. That
+ *     one is a deliberate message from the app, and calling it a defect from
+ *     the outside would be a guess in the other direction.
+ */
+/**
+ * The overlay text present after an action but not before it.
+ *
+ * The probe moves the pointer away and re-reads before hovering, so `before`
+ * should normally be empty — but an app that pins a tooltip open, or a second
+ * overlay already on screen, would otherwise be read as though the hover had
+ * revealed it.
+ */
+export function revealedOverlay(before: string, after: string): string {
+  const was = new Set(before.split(' \u00b7 ').filter(Boolean));
+  return after.split(' \u00b7 ').filter((t) => t && !was.has(t)).join(' ');
+}
+
+export function overlayAddsInformation(overlayText: string, controlName: string): boolean {
+  const words = (v: string) =>
+    v.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter(Boolean);
+  const named = new Set(words(controlName));
+  const added = words(overlayText).filter((w) => !named.has(w) && !OVERLAY_FILLER.has(w));
+  return new Set(added).size >= 2;
+}
+
 export function classifyOutcome(
   before: PageSnapshot,
   after: PageSnapshot,
@@ -807,6 +946,17 @@ export function classifyOutcome(
   },
   /** The control that was clicked, when known — used to recognize self-links. */
   element?: ElementDescriptor,
+  /**
+   * Count a transient overlay appearing as an effect.
+   *
+   * False for a click, which is why issue #61 existed: Playwright hovers before
+   * it clicks, so a tooltip is up in the "after" snapshot whether or not the
+   * handler did anything. True for the HOVER probe, where raising a tooltip is
+   * precisely the effect being tested — a dashboard of glossary terms is the
+   * case that probe was written for, and excluding overlays everywhere would
+   * have traded this issue's false negative for that false positive.
+   */
+  options: { countOverlays?: boolean } = {},
 ): Outcome {
   const injected = watch.injectedFailures ?? [];
   const base: Omit<Outcome, 'kind'> = {
@@ -868,6 +1018,20 @@ export function classifyOutcome(
     before.contentHash !== after.contentHash
   ) {
     return { ...base, ...handled, kind: 'state-changed' };
+  }
+
+  // A tooltip appearing, when the caller asked for that to count. Placed above
+  // the visual and class checks rather than below them because it is the more
+  // specific statement: those two would also fire on the same popper, and
+  // "revealed a tooltip" is a better sentence to hand a reader than "the view
+  // changed visually".
+  if (options.countOverlays && before.overlayHash !== after.overlayHash) {
+    return {
+      ...base,
+      ...handled,
+      kind: 'state-changed',
+      note: 'revealed a tooltip or overlay',
+    };
   }
 
   // The whole effect was to move the page, or a region of it: back to top, a
