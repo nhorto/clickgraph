@@ -69,6 +69,34 @@ Config fields: `name`, `repo` (path/URL; `"."` = this repo), `branch`, `url`,
 `serve`, optional `install`, `build`, `env`, `pairs`, `readyTimeoutMs`,
 `walkArgs` (e.g. `["--max-actions", "120"]` to cap long walks).
 
+### Vetted targets
+
+**react-admin** (`targets/react-admin.json`, `mutations/react-admin.json`),
+vetted 2026-08-20 against the four criteria above:
+
+1. **Self-contained** — `examples/simple` runs on `ra-data-fakerest`, an
+   in-memory REST provider. No backend, no database, no keys, no seeding.
+2. **DOM, not canvas** — MUI throughout.
+3. **Old commits still run** — the commit six months back (`fdfae04fb`,
+   2026-02-20) installs in 22s and serves under vite 7.3.1. This is the
+   criterion that kills most candidates, and it is the one to re-check before
+   trusting a replay run rather than assuming it still holds.
+4. **Real surface** — posts, comments, tags and users, with lists, filters,
+   pagination, create/edit/show forms and reference inputs. A bounded walk
+   (`--max-depth 2 --max-actions 120`) produced 53 edges and found a real
+   defect on the first attempt.
+
+The property that makes it cheap: its vite config aliases every workspace
+package to its `src`, so **there is no build step** — `yarn install` and serve.
+A mutation to library source takes effect on the next serve with nothing to
+rebuild, which is why the mutation config has no `install` step at all.
+
+It earned its place before either harness was run against it. The first walk
+died with `id.startsWith is not a function` — a form containing
+`<input name="id">` makes the form itself answer `.id` with that input, which
+killed the run and wrote no graph (issue #55). That is a shape the fixture
+could not produce and nobody had thought to write.
+
 ## Track 2 — mutation (`mutate.mjs`)
 
 ```bash
@@ -178,6 +206,24 @@ diverges or fails to run.
 **Port 4177**, deliberately not the 4173 that `replay.mjs` and
 `scripts/verify.sh` both use — those two already kill each other's fixtures,
 and this harness runs long enough to be tempting to start alongside one.
+
+### A mutation run must not saturate its budget
+
+`walkArgs` has to give the walk enough actions to cover the app, for the same
+reason scenario U in `verify.sh` does. A saturated walk spends its last actions
+on whichever state it reaches first, so which controls get walked moves between
+runs — and a mutation whose target went unwalked in the mutated run reports
+**MISSED** while measuring nothing at all. That is a false detection gap, and it
+sends you looking for a bug in the walker that is not there.
+
+Check it rather than assume it: `coverage.limitsHit` in the run's baseline
+graph should not contain `maxActions`. If it does, raise the budget before
+reading a single result.
+
+The first react-admin run had exactly this problem, and it is also how
+`edit-button-gone` came to be a bad mutation — it was aimed at controls picked
+from a walk of a *different* commit, and the harness's own baseline never
+walked them.
 
 ## The cadence
 
