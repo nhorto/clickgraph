@@ -72,9 +72,13 @@
  * form (issue #24). Clicking that button with the fields empty changes nothing,
  * exactly as a dead button would — so a walk that has not filled them must
  * report that it could not tell, and one that has must prove the button works.
- * Its second card puts two buttons beside one field, which is the case where
- * the grouping cannot be inferred and guessing it would mean typing into fields
- * that do not belong together.
+ * Its second card puts two buttons beside one field — "Save note" and "Clear",
+ * both of which do something — which is the case where the grouping cannot be
+ * inferred and guessing it would mean typing into fields that do not belong
+ * together. Its third card is "Save / Cancel", where one of the two buttons
+ * exists only to abandon, so the grouping CAN be inferred (issue #63); before
+ * that, the commonest form footer in existence defeated the inference and the
+ * card's select was reported as a control that holds a value and does nothing.
  *
  * Run with AUTH=1 to put the whole app behind a login screen, so the walker can
  * be checked against the case it used to get wrong: without a session it walks
@@ -474,6 +478,21 @@ const routes = {
     </div>
     <p id="note-result"></p>
 
+    <div class="card">
+      <p>
+        <label for="role">Role</label>
+        <select id="role" data-testid="role" name="role">
+          <option value="">Choose a role</option>
+          <option value="lead">Lead</option>
+          <option value="crew">Crew</option>
+        </select>
+      </p>
+      <p><label>Start <input type="text" id="start" data-testid="start" name="start"></label></p>
+      <button id="save-role" data-testid="save-role">Save</button>
+      <button id="cancel-role" data-testid="cancel-role">Cancel</button>
+    </div>
+    <p id="role-result"></p>
+
     <script>
       // No <form> anywhere on this page, which is the point. "Send invite"
       // declines an empty invite in silence — indistinguishable, from outside,
@@ -496,6 +515,23 @@ const routes = {
       document.getElementById('clear-note').addEventListener('click', () => {
         document.getElementById('note').value = '';
         document.getElementById('note-result').textContent = 'Cleared';
+      });
+      // The third card is "Save / Cancel" — the most common form footer there
+      // is, and the one that used to defeat the grouping entirely (issue #63).
+      // Two buttons are in reach of the fields, so under the exactly-one rule
+      // neither field was ever filled and the SELECT then read as a control
+      // that holds a value and does nothing. Cancel abandons; only Save
+      // commits, and only a walk that filled the fields can tell.
+      document.getElementById('save-role').addEventListener('click', () => {
+        const role = document.getElementById('role').value;
+        const start = document.getElementById('start').value.trim();
+        if (!role || !start) return;
+        document.getElementById('role-result').textContent = role + ' from ' + start;
+      });
+      document.getElementById('cancel-role').addEventListener('click', () => {
+        document.getElementById('role').value = '';
+        document.getElementById('start').value = '';
+        document.getElementById('role-result').textContent = 'Cancelled';
       });
     </script>`),
       }

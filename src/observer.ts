@@ -158,6 +158,12 @@ function extractPageData() {
    * the page is "in reach" of everything else.
    */
   const CLUSTER_DEPTH = 6;
+  /**
+   * Buttons that close a thing rather than commit it. Kept narrow on purpose:
+   * every name here is a word whose whole job is to abandon, so a false
+   * positive would need a "Save" spelled "Cancel".
+   */
+  const DISMISS = /^\s*(cancel|close|dismiss|discard|reset|back|never mind|not now)\b/i;
 
   /** Takes typing or choosing, rather than clicking. Mirrors `isTextEntry`. */
   function isFieldLike(el: any): boolean {
@@ -250,7 +256,22 @@ function extractPageData() {
   {
     const bareFields = all.filter((el: any) => !formOf(el) && isFieldLike(el));
     if (bareFields.length > 0) {
-      const barePresses = all.filter((el: any) => !formOf(el) && isPressLike(el));
+      // A button that dismisses is not a button that submits, and it must not
+      // be allowed to make the real submit ambiguous (issue #63).
+      //
+      // "Save / Cancel" is the most common form footer there is, and under the
+      // exactly-one rule below it produced exactly two — so every field in
+      // every edit row, dialog and inline editor stayed unclustered, never got
+      // filled, and its selects were then reported as controls that hold a
+      // value and do nothing. Nothing in the DOM separates Save from Cancel,
+      // so this is a name test, in the same spirit as DANGEROUS in walker.ts.
+      //
+      // Being wrong here costs what the existing rule already risks and no
+      // more: if both reachable buttons dismiss, none is left and the field
+      // stays skipped, exactly as today.
+      const barePresses = all
+        .filter((el: any) => !formOf(el) && isPressLike(el))
+        .filter((el: any) => !DISMISS.test(accessibleName(el)));
       const members = new Map<any, any[]>();
       for (const field of bareFields) {
         let node: any = field.parentElement;

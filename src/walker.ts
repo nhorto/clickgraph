@@ -236,12 +236,21 @@ interface OptionChoice {
  * while working perfectly. One option is enough to prove the select does
  * something, and walking every option of a long list would spend the whole
  * action budget on a single dropdown.
+ *
+ * An option with an EMPTY value is skipped where any other exists. "Choose a
+ * role", "— none —", "All customers": the placeholder is the commonest first
+ * option there is, and choosing it fills a field with nothing. On its own that
+ * merely wastes an action; inside a group it is worse, because the submit then
+ * declines an incomplete form and gets reported as a button that does nothing.
+ * Falling back to it when every option is empty keeps a select that is genuinely
+ * all-placeholder walkable rather than silently skipped.
  */
 async function pickOption(page: Page, selector: Selector): Promise<OptionChoice | null> {
   try {
     return await resolve(page, selector).evaluate((el: any) => {
       const options = Array.from(el.options ?? []) as any[];
-      const next = options.find((o) => !o.selected && !o.disabled);
+      const usable = options.filter((o) => !o.selected && !o.disabled);
+      const next = usable.find((o) => o.value !== '') ?? usable[0];
       if (!next) return null;
       return { value: next.value, label: (next.label || next.value || '').trim() };
     });

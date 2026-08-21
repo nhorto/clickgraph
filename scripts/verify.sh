@@ -25,6 +25,8 @@
 #      and a declaration that lands nowhere fails the run instead of passing
 #   V  a control the walk's own form fill removes is a skip, not a dead run
 #   W  a digits-only field declared with inputmode is filled with digits
+#   X  a Save/Cancel footer is grouped, and its select is filled with a real
+#      option rather than the placeholder
 #
 # Usage: ./scripts/verify.sh     (from the repo root, after `npm run build`)
 set -uo pipefail
@@ -1236,6 +1238,35 @@ node -e '
     fail("a working control on the cluster screen was reported as dead");
 ' 2>>/tmp/clickgraph-json-err.txt
 check "$?" "0" "groups exactly the fields that belong to it, and proves the button works"
+
+node -e '
+  const v = require("/tmp/clickgraph-cluster-on-out.json");
+  const g = require("/tmp/clickgraph-cluster-on.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  // "Save / Cancel" is the commonest form footer there is, and it used to
+  // defeat the grouping outright: two buttons in reach, so the exactly-one
+  // rule refused, so neither field was ever filled and the SELECT was then
+  // reported as a control that holds a value and does nothing (issue #63).
+  const saved = g.edges.find((e) => e.action.kind === "fill" && /"Save"/.test(e.action.selector.label));
+  if (!saved) fail("the Save/Cancel group was never inferred");
+  if (saved.outcome.kind === "no-effect")
+    fail("Save did nothing once its group was filled — the fill did not reach it");
+  // The placeholder half (issue #64). Filling the select with "Choose a role"
+  // leaves the group incomplete, the handler declines, and Save is reported
+  // dead WITH "(form filled: 2 fields)" beside it — which reads as a checked
+  // failure rather than an unfilled one, so it misleads harder than the
+  // unfilled case does.
+  const role = saved.action.fill.find((f) => /Role/.test(f.label));
+  if (!role) fail("the select was not part of the group");
+  if (role.option === "") fail(`the placeholder option was chosen: ${JSON.stringify(role)}`);
+  // Cancel is a real control on that card and must still be walked, not
+  // swallowed by being excluded from the grouping.
+  if (!g.edges.some((e) => /Cancel/.test(e.action.selector.label ?? "")))
+    fail("excluding Cancel from the group cost it its walk");
+  if (v.findings.some((f) => /Save|Cancel|Role|Start/.test(f.control)))
+    fail("a working control on the Save/Cancel card was reported as dead");
+' 2>>/tmp/clickgraph-json-err.txt
+check "$?" "0" "groups a Save/Cancel footer and fills its select with a real option (#63, #64)"
 
 
 echo "U: re-entering a state by routing costs nothing in what is found (issue #23)"
