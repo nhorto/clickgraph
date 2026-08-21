@@ -2,7 +2,6 @@
   "name": "react-admin",
   "cwd": "eval/.work/react-admin/repo",
   "url": "http://localhost:4373/",
-  "install": "corepack yarn install --mode=skip-build",
   "serve": "cd examples/simple && corepack yarn dev --port 4373 --strictPort",
   "readyTimeoutMs": 120000,
   "walkArgs": [
@@ -54,5 +53,6 @@
         "match": "Edit"
       }
     }
-  ]
+  ],
+  "note": "The checkout at cwd must already have its dependencies installed; there is no install step here on purpose. Vite aliases every workspace package to its src, so a mutation to source takes effect on the next serve with nothing to rebuild \u2014 and an install per mutation would be four minutes of nothing, and would hide a genuine install failure inside a mutation result."
 }
