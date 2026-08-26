@@ -9,7 +9,7 @@ import type { DeclaredField, FaultInjection, WalkConfig } from './types.js';
 import type { WalkOptions } from './walker.js';
 import { faultSpec, parseFaultSpec } from './fault.js';
 import { fieldSpec, parseFieldSpec } from './formfill.js';
-import { CLICKGRAPH_VERSION, clickgraphVersionWarning } from './version.js';
+import { CLICKGRAPH_BUILD, CLICKGRAPH_VERSION, clickgraphProvenanceWarning, runningProducer } from './version.js';
 import { normalizeRoute } from './fingerprint.js';
 import { warnIfStaleLocalBuild } from './build.js';
 
@@ -105,7 +105,7 @@ function parseArgs(argv: string[]): Args {
 const HELP = `
 clickgraph — walk a running web app, graph what its controls actually do
 
-  clickgraph --version        print the running clickgraph build version
+  clickgraph --version        print the running version and the build it came from
 
   clickgraph walk <url>     explore the app and write the baseline graph
   clickgraph diff <url>     re-walk and compare against the baseline
@@ -179,7 +179,10 @@ Options
                         verdict built for an agent to read; show prints the
                         whole graph
   --quiet               suppress progress lines
-  --version, -v         print the running clickgraph build version
+  --version, -v         print the running version and the commit it was built
+                        from, e.g. clickgraph 0.1.0 (build 1a2b3c4d5e6f).
+                        A -dirty suffix means that build had uncommitted
+                        edits; unknown means it was not built from a checkout
 
 Exit codes
   0  healthy: no regressions, and the app loaded cleanly
@@ -376,7 +379,11 @@ async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.command === '--version' || args.command === '-v') {
-    console.log(`clickgraph ${CLICKGRAPH_VERSION}`);
+    // One line, both halves. The version identifies the release; the build
+    // identifies the commit inside it, which is the only half that moves for
+    // anyone running out of a checkout — so a project can pin this whole
+    // string in CI and notice when its toolchain changed underneath it.
+    console.log(`clickgraph ${CLICKGRAPH_VERSION} (build ${CLICKGRAPH_BUILD})`);
     return 0;
   }
 
@@ -427,9 +434,9 @@ async function main(): Promise<number> {
     }
     const warnings = configWarnings(args, baseline.config, args.url);
     printConfigWarnings(warnings);
-    const producerWarning = clickgraphVersionWarning(
-      baseline.clickgraphVersion,
-      CLICKGRAPH_VERSION,
+    const producerWarning = clickgraphProvenanceWarning(
+      { version: baseline.clickgraphVersion, build: baseline.clickgraphBuild },
+      runningProducer(),
     );
     if (producerWarning) console.error(`NOTE: ${producerWarning}\n`);
     const current = await walk(args.url, optionsFor(args, baseline.config));

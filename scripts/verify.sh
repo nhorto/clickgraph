@@ -12,7 +12,8 @@
 #   H  diff inherits baseline settings and warns about explicit mismatches
 #   I  a failure the walk injects reaches UI no healthy walk can see, and
 #      separates the control that swallows it from the one that reports it
-#   I  CLI, graph, and JSON output identify the clickgraph build that produced them
+#   I  CLI, graph, and JSON output name the exact build that produced them —
+#      the commit, not just the release, and honestly when there is no commit
 #   J  declared routes expose screens that fixture state left unreachable
 #   K  a safely dismissed confirm dialog is observed, not called a dead control
 #   L  a screen CSS is hiding does not lend its headings to the one on screen
@@ -69,10 +70,13 @@ check() {
 
 echo "I: build version provenance"
 PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
-test "$(node dist/cli.js --version)" = "clickgraph $PACKAGE_VERSION"
-check "$?" "0" "--version prints the compiled clickgraph version"
-test "$(node dist/cli.js -v)" = "clickgraph $PACKAGE_VERSION"
-check "$?" "0" "-v prints the compiled clickgraph version"
+BUILD_STAMP="$(node -e 'import("./dist/version.js").then((m) => console.log(m.CLICKGRAPH_BUILD))')"
+test "$(node dist/cli.js --version)" = "clickgraph $PACKAGE_VERSION (build $BUILD_STAMP)"
+check "$?" "0" "--version prints the compiled version and the build it came from"
+test "$(node dist/cli.js -v)" = "clickgraph $PACKAGE_VERSION (build $BUILD_STAMP)"
+check "$?" "0" "-v prints the same one line, so a project can pin it in CI"
+echo "$BUILD_STAMP" | grep -qE '^([0-9a-f]{12}(-dirty)?|unknown)$'
+check "$?" "0" "the stamp is a commit, optionally marked dirty, or an honest unknown"
 node -e '
   Promise.all([import("./dist/version.js"), import("./dist/build.js")]).then(([
     { CLICKGRAPH_VERSION }, { staleLocalBuildFiles },
@@ -98,6 +102,58 @@ node -e '
   });
 '
 check "$?" "0" "a local source file newer than dist is detected as a stale build"
+# The stamp is resolved at BUILD time and compiled in, because an installed
+# package has no .git to ask at run time — and one unpacked inside a project
+# that does have one would answer with THAT project's commit. So every way the
+# build can fail to know its own commit has to degrade to a stated unknown
+# rather than to a borrowed answer (issue #41).
+node -e '
+  const { execFileSync } = require("node:child_process");
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "ignore" });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clickgraph-stamp-"));
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.email", "verify@example.invalid");
+  git(root, "config", "user.name", "verify");
+  fs.writeFileSync(path.join(root, "tracked.txt"), "one");
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "one");
+  const clean = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" })
+    .trim().slice(0, 12);
+  import("./scripts/stamp-build.mjs").then(({ buildStamp, UNIDENTIFIED_BUILD }) => {
+    if (buildStamp(root) !== clean) fail(`a clean checkout must stamp its own commit: ${buildStamp(root)}`);
+    fs.writeFileSync(path.join(root, "tracked.txt"), "two");
+    if (buildStamp(root) !== clean + "-dirty") fail("an uncommitted edit must show as dirty");
+    git(root, "checkout", "-q", "--", "tracked.txt");
+    if (buildStamp(root) !== clean) fail("reverting the edit must clear the dirty mark");
+    fs.writeFileSync(path.join(root, "untracked.txt"), "three");
+    if (buildStamp(root) !== clean + "-dirty") fail("an untracked file must show as dirty too");
+    fs.rmSync(path.join(root, "untracked.txt"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "clickgraph-nogit-"));
+    if (buildStamp(outside) !== UNIDENTIFIED_BUILD)
+      fail(`a build outside any checkout must not invent a commit: ${buildStamp(outside)}`);
+    const nested = path.join(root, "vendor", "clickgraph");
+    fs.mkdirSync(nested, { recursive: true });
+    if (buildStamp(nested) !== UNIDENTIFIED_BUILD)
+      fail(`a build nested in another repo must not borrow its commit: ${buildStamp(nested)}`);
+  });
+'
+check "$?" "0" "the stamp names a clean commit, marks a dirty tree, and refuses to guess"
+node -e '
+  Promise.all([import("./dist/version.js"), import("./scripts/stamp-build.mjs")]).then(([
+    { CLICKGRAPH_BUILD, UNIDENTIFIED_BUILD }, { buildStamp, UNIDENTIFIED_BUILD: generated },
+  ]) => {
+    if (UNIDENTIFIED_BUILD !== "unknown" || generated !== UNIDENTIFIED_BUILD) process.exit(1);
+    // Compared without the dirty mark: editing anything after the build flips
+    // that mark, and the claim being made here is only about the commit.
+    const commit = (stamp) => stamp.replace(/-dirty$/, "");
+    if (commit(CLICKGRAPH_BUILD) !== commit(buildStamp())) process.exit(1);
+  });
+'
+check "$?" "0" "the compiled stamp names the commit this checkout is on, by the same name"
 
 echo "Building baseline against the intact app..."
 start_fixture PORT="$PORT"
@@ -106,9 +162,13 @@ node dist/cli.js walk "$URL" --quiet >/tmp/clickgraph-base.txt 2>&1
 check "$?" "0" "baseline walk succeeds"
 node -e '
   const graph = require("./.uigraph/graph.json");
-  if (graph.clickgraphVersion !== require("./package.json").version) process.exit(1);
+  import("./dist/version.js").then(({ CLICKGRAPH_VERSION, CLICKGRAPH_BUILD }) => {
+    if (graph.clickgraphVersion !== require("./package.json").version) process.exit(1);
+    if (graph.clickgraphVersion !== CLICKGRAPH_VERSION) process.exit(1);
+    if (graph.clickgraphBuild !== CLICKGRAPH_BUILD) process.exit(1);
+  });
 '
-check "$?" "0" "the graph records which clickgraph build produced it"
+check "$?" "0" "the graph records the release AND the build inside it that produced it"
 grep -q 'NO EFFECT.*"Export"' /tmp/clickgraph-base.txt; check "$?" "0" "finds the unwired Export button"
 grep -q 'ERROR.*"Save settings"' /tmp/clickgraph-base.txt; check "$?" "0" "finds the 500 on Save settings"
 grep -q 'NO EFFECT.*"Filter orders by region"' /tmp/clickgraph-base.txt
@@ -160,16 +220,37 @@ node -e '
     "/tmp/clickgraph-version-mismatch.json",
     JSON.stringify({ ...graph, clickgraphVersion: "0.0.0-test" }),
   );
+  // Same release, different commit — the case the package version cannot see.
+  fs.writeFileSync(
+    "/tmp/clickgraph-build-mismatch.json",
+    JSON.stringify({ ...graph, clickgraphBuild: "0123456789ab" }),
+  );
+  delete graph.clickgraphBuild;
+  fs.writeFileSync("/tmp/clickgraph-build-legacy.json", JSON.stringify(graph));
   delete graph.clickgraphVersion;
   fs.writeFileSync("/tmp/clickgraph-version-legacy.json", JSON.stringify(graph));
 '
 node dist/cli.js show --json --baseline /tmp/clickgraph-version-legacy.json >/dev/null
 check "$?" "0" "a legacy graph without producer provenance remains readable"
+node dist/cli.js show --json --baseline /tmp/clickgraph-build-legacy.json >/dev/null
+check "$?" "0" "a graph written before build stamping remains readable"
 node dist/cli.js diff "$URL" --quiet --json --max-actions 0 \
   --baseline /tmp/clickgraph-version-mismatch.json \
   >/tmp/clickgraph-version-diff.json 2>/tmp/clickgraph-version-diff-err.txt
 grep -q 'baseline was walked with clickgraph 0.0.0-test' /tmp/clickgraph-version-diff-err.txt
 check "$?" "0" "a version mismatch is prominent before the diff walk"
+node dist/cli.js diff "$URL" --quiet --json --max-actions 0 \
+  --baseline /tmp/clickgraph-build-mismatch.json \
+  >/tmp/clickgraph-build-diff.json 2>/tmp/clickgraph-build-diff-err.txt
+grep -q "build 0123456789ab; this diff is build $BUILD_STAMP — same released version, different builds" \
+  /tmp/clickgraph-build-diff-err.txt
+check "$?" "0" "one release walked by two builds is said out loud before the diff walk"
+node dist/cli.js diff "$URL" --quiet --json --max-actions 0 \
+  --baseline /tmp/clickgraph-build-legacy.json \
+  >/dev/null 2>/tmp/clickgraph-build-legacy-err.txt
+grep -q "predates build stamping, so it cannot say which build walked it" \
+  /tmp/clickgraph-build-legacy-err.txt
+check "$?" "0" "a baseline older than stamping says so rather than reading as a match"
 node -e '
   const verdict = require("/tmp/clickgraph-version-diff.json");
   if (verdict.version !== require("./package.json").version) process.exit(1);
@@ -177,6 +258,61 @@ node -e '
   if (!/tooling, not app changes/.test(verdict.versionWarning ?? "")) process.exit(1);
 '
 check "$?" "0" "diff JSON carries both versions and the provenance warning"
+# The stamp is METADATA. If a build difference were allowed to produce even one
+# Change, every upgrade of the toolchain would read as a regression in the app —
+# which is the failure this whole feature exists to prevent, arriving by the
+# other door. Asserted against the real graph, so it is the real diff.
+node -e '
+  const graph = require("./.uigraph/graph.json");
+  const fail = (m) => { console.error(m); process.exit(1); };
+  const CAVEAT = "detection differences may be tooling, not app changes; re-baseline to be sure";
+  const version = graph.clickgraphVersion;
+  const running = graph.clickgraphBuild;
+  const withBuild = (build) => {
+    const copy = { ...graph };
+    if (build === null) delete copy.clickgraphBuild;
+    else copy.clickgraphBuild = build;
+    return copy;
+  };
+  Promise.all([
+    import("./dist/graph.js"), import("./dist/verdict.js"), import("./dist/report.js"),
+  ]).then(([{ diffGraphs }, { diffVerdict, walkVerdict }, { reportDiff }]) => {
+    if (walkVerdict(graph, "x").build !== running) fail("the walk verdict dropped the build");
+
+    const same = diffVerdict(diffGraphs(graph, graph), graph);
+    if (same.versionWarning !== null) fail(`one build warned about itself: ${same.versionWarning}`);
+    if (same.build !== running || same.baselineBuild !== running) fail("the verdict dropped a build");
+
+    const drift = diffGraphs(withBuild("0123456789ab"), graph);
+    if (drift.changes.length !== 0)
+      fail(`a build difference invented ${drift.changes.length} change(s)`);
+    if (drift.baselineClickgraphBuild !== "0123456789ab") fail("the diff dropped the baseline build");
+    if (drift.currentClickgraphBuild !== running) fail("the diff dropped the current build");
+    const verdict = diffVerdict(drift, graph);
+    if (verdict.ok !== true) fail("a build difference must never make a diff fail");
+    if (!/^no change/.test(verdict.verdict)) fail(`want no change, got: ${verdict.verdict}`);
+    if (verdict.baselineBuild !== "0123456789ab") fail("the verdict dropped the baseline build");
+    if (verdict.versionWarning !== `the baseline was walked by clickgraph ${version} build ` +
+      `0123456789ab; this diff is build ${running} — same released version, different builds, ` +
+      `so ${CAVEAT}`) fail(`unexpected build warning: ${verdict.versionWarning}`);
+    if (!reportDiff(drift, graph).includes("same released version, different builds"))
+      fail("the diff report never mentions the build difference");
+
+    const legacy = diffVerdict(diffGraphs(withBuild(null), graph), graph);
+    if (legacy.baselineBuild !== null) fail("a baseline with no stamp must read null, not unknown");
+    if (legacy.versionWarning !== `the baseline records clickgraph ${version} but predates build ` +
+      `stamping, so it cannot say which build walked it; this diff is build ${running} — ${CAVEAT}`)
+      fail(`unexpected legacy warning: ${legacy.versionWarning}`);
+
+    // Two builds that could not name a commit are not thereby the same build.
+    const blind = withBuild("unknown");
+    const blindVerdict = diffVerdict(diffGraphs(blind, blind), blind);
+    if (blindVerdict.versionWarning !== `the baseline was walked by a clickgraph ${version} build ` +
+      `that could not name its commit; this diff is build unknown — ${CAVEAT}`)
+      fail(`two unidentified builds read as one: ${blindVerdict.versionWarning}`);
+  });
+'
+check "$?" "0" "a build difference is warned about and never counted as app drift"
 
 echo "A: unchanged app, run twice (determinism)"
 node dist/cli.js diff "$URL" --quiet >/dev/null 2>&1; check "$?" "0" "run 1 reports no change"
@@ -212,6 +348,8 @@ node -e '
   const fail = (m) => { console.error(m); process.exit(1); };
   if (v.version !== require("./package.json").version) fail("diff verdict has no build version");
   if (v.baselineVersion !== require("./package.json").version) fail("diff lost the baseline build version");
+  if (!/^([0-9a-f]{12}(-dirty)?|unknown)$/.test(v.build)) fail("diff verdict has no build stamp");
+  if (v.baselineBuild !== v.build) fail("both sides were this build and the verdict should say so");
   if (v.ok !== false) fail("ok should be false while a regression stands");
   if (v.regressions.length !== 1) fail(`want 1 regression, got ${v.regressions.length}`);
   if (!/Archive/.test(v.regressions[0].summary)) fail("the dead new button is not the regression");
