@@ -17,7 +17,7 @@ npm install && npx playwright install chromium && npm run build
 npm run fixture &                      # demo app with planted bugs
 node dist/cli.js walk http://localhost:4173     # explore, write baseline
 node dist/cli.js diff http://localhost:4173     # re-walk, report changes
-node dist/cli.js --version                    # identify the running build
+node dist/cli.js --version                    # identify the running build, commit included
 ```
 
 ### What a walk reports
@@ -62,6 +62,7 @@ context or skip the check. `ok` always agrees with the exit code.
 {
   "ok": false,
   "version": "0.1.0",
+  "build": "1a2b3c4d5e6f",
   "verdict": "of 28 interaction(s) walked, 1 errored and 1 produced no observable effect",
   "load": { "healthy": true, "errors": [], "interactiveFound": 12 },
   "findings": [
@@ -415,18 +416,46 @@ structural.
 
 ## Versioned baselines
 
-Every new graph records both the graph-format version and the released
-clickgraph version that produced it. `clickgraph --version` (or `-v`) prints the
-compiled build; walk and diff JSON include it as `version`. When a diff reads a
-legacy baseline with no producer version, or a baseline written by a different
-version, it warns that detection changes may be tooling rather than app
-regressions. Old graphs remain readable.
+Every new graph records the graph-format version, the released clickgraph
+version that produced it, and the **build** inside that version — the commit
+the CLI was compiled from:
+
+```
+$ clickgraph --version
+clickgraph 0.1.0 (build 1a2b3c4d5e6f)
+```
+
+The release is the coarse answer and the commit is the fine one. For anyone
+running the CLI out of a checkout the release never moves, so two graphs walked
+by builds twenty-five commits apart both record `0.1.0` and nothing says the
+comparison is between two different tools. The commit is what moves.
+
+The stamp is resolved at *build* time and compiled in, never read from `.git`
+at run time: an installed package has no `.git`, and one unpacked inside a
+project that does would answer with that project's commit. When the build
+genuinely cannot name a commit — a tarball install, a publish from an export —
+it stamps `unknown` and says so rather than guessing. A tree with uncommitted
+edits stamps `1a2b3c4d5e6f-dirty`, because "built from 1a2b3c4d5e6f" is false
+when it was not.
+
+Walk and diff JSON carry `version` and `build`; a diff also carries
+`baselineVersion` and `baselineBuild`, so CI can assert the exact toolchain a
+committed baseline was walked by. When the two sides disagree, or the baseline
+predates either kind of provenance, the diff prints a note saying the two
+graphs came from different builds and that differences may be tooling. It is a
+**warning, never a finding**: a build difference is metadata and can never by
+itself count as app drift, or every toolchain upgrade would read as a
+regression. Old graphs stay readable, and a baseline with no stamp is reported
+as unable to say — not as a match.
 
 In a local checkout, every CLI command also compares `src/` timestamps with the
 compiled files it is about to run and warns when `dist/` is stale. `npm run
-build` refuses a package/source version mismatch. Released detection changes
-still rely on normal semantic-version discipline; provenance is not a hash of
-every source edit.
+build` refuses a package/source version mismatch.
+
+What this still does *not* separate: two `-dirty` builds of the same commit.
+The flag says the tree had edits, not which ones — a stamp is a commit plus a
+flag, not a hash of every source edit. Commit before taking a baseline you
+intend to keep.
 
 ## Safety
 

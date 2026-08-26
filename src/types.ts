@@ -454,6 +454,17 @@ export interface UIGraph {
    * before producer provenance was added remain readable.
    */
   clickgraphVersion?: string;
+  /**
+   * The build within that version: the commit the CLI was compiled from, with
+   * `-dirty` when the tree had uncommitted edits, or `unknown` when the build
+   * was not made from a checkout of clickgraph.
+   *
+   * The version alone only separates releases, and a checkout-based install
+   * has none — it has commits (issue #41). Optional so graphs written before
+   * build stamping remain readable, and absent is read as a different fact
+   * from `unknown`: one baseline cannot say, the other says it does not know.
+   */
+  clickgraphBuild?: string;
   /** Version of the graph file format, independent of the producing build. */
   version: string;
   baseUrl: string;
@@ -494,6 +505,13 @@ export interface GraphDiff {
   /** Missing when the baseline predates producer-version provenance. */
   baselineClickgraphVersion?: string;
   currentClickgraphVersion?: string;
+  /**
+   * Missing when the baseline predates build stamping. Metadata only — no
+   * `Change` is ever derived from a build difference, or every toolchain
+   * upgrade would read as app drift.
+   */
+  baselineClickgraphBuild?: string;
+  currentClickgraphBuild?: string;
   /** Current route gaps, carried so one-argument reportDiff calls stay honest. */
   currentUnreachedRoutes?: string[];
   /** Declared values the current walk never typed, carried for the same reason. */

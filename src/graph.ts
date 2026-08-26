@@ -371,6 +371,8 @@ export function diffGraphs(baseline: UIGraph, current: UIGraph): GraphDiff {
     currentWalkedAt: current.walkedAt,
     baselineClickgraphVersion: baseline.clickgraphVersion,
     currentClickgraphVersion: current.clickgraphVersion,
+    baselineClickgraphBuild: baseline.clickgraphBuild,
+    currentClickgraphBuild: current.clickgraphBuild,
     currentUnreachedRoutes: current.coverage.unreachedRoutes ?? [],
     currentUnusedFields: current.coverage.unusedFields ?? [],
     // Every limit, not the first — a diff that explains an evicted control by

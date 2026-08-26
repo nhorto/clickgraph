@@ -1,5 +1,9 @@
 node_modules/
 dist/
+
+# The build stamp, generated into src/ before every compile. Untracked so that
+# building never dirties the working tree the stamp is describing.
+src/build-stamp.ts
 # Walk output. In this repo the graph is only ever produced against the fixture,
 # so it is local noise. In a project being tested the graph is meant to be
 # committed — it is the baseline a diff compares against.

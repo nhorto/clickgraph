@@ -7,7 +7,7 @@ import type {
   UINode, WalkConfig,
 } from './types.js';
 import { GRAPH_VERSION } from './types.js';
-import { CLICKGRAPH_VERSION } from './version.js';
+import { CLICKGRAPH_BUILD, CLICKGRAPH_VERSION } from './version.js';
 import {
   ActionWatch, captureState, classifyOutcome, compareScroll, instrumentChromeEffects,
   readScrollPositions, resolve,
@@ -1666,6 +1666,7 @@ export async function walk(baseUrl: string, options: WalkOptions = {}): Promise<
 
   return {
     clickgraphVersion: CLICKGRAPH_VERSION,
+    clickgraphBuild: CLICKGRAPH_BUILD,
     version: GRAPH_VERSION,
     baseUrl,
     walkedAt: new Date().toISOString(),

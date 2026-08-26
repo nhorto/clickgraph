@@ -14,7 +14,7 @@
 import type { GraphDiff, UIGraph } from './types.js';
 import { actionLabel, nodeLabel } from './graph.js';
 import { faultSpec } from './fault.js';
-import { clickgraphVersionWarning } from './version.js';
+import { UNIDENTIFIED_BUILD, clickgraphProvenanceWarning } from './version.js';
 
 export interface VerdictFinding {
   severity: 'error' | 'no-effect';
@@ -51,6 +51,8 @@ export interface VerdictCoverage {
 export interface WalkVerdict {
   tool: 'clickgraph';
   version: string;
+  /** The commit inside that version, so CI can assert the exact toolchain. */
+  build: string;
   command: 'walk';
   url: string;
   walkedAt: string;
@@ -71,7 +73,10 @@ export interface WalkVerdict {
 export interface DiffVerdict {
   tool: 'clickgraph';
   version: string;
+  build: string;
   baselineVersion: string | null;
+  /** null when the baseline predates build stamping — not the same as `unknown`. */
+  baselineBuild: string | null;
   /**
    * The budget the BASELINE walk stopped at, if it stopped at one. The current
    * walk's is already in `coverage.limitHit`; this is its other half, and
@@ -208,6 +213,7 @@ export function walkVerdict(graph: UIGraph, graphPath: string): WalkVerdict {
   return {
     tool: 'clickgraph',
     version: graph.clickgraphVersion ?? 'unknown',
+    build: graph.clickgraphBuild ?? UNIDENTIFIED_BUILD,
     command: 'walk',
     url: graph.baseUrl,
     walkedAt: graph.walkedAt,
@@ -278,10 +284,12 @@ export function diffVerdict(
   return {
     tool: 'clickgraph',
     version: diff.currentClickgraphVersion ?? 'unknown',
+    build: diff.currentClickgraphBuild ?? UNIDENTIFIED_BUILD,
     baselineVersion: diff.baselineClickgraphVersion ?? null,
-    versionWarning: clickgraphVersionWarning(
-      diff.baselineClickgraphVersion,
-      diff.currentClickgraphVersion,
+    baselineBuild: diff.baselineClickgraphBuild ?? null,
+    versionWarning: clickgraphProvenanceWarning(
+      { version: diff.baselineClickgraphVersion, build: diff.baselineClickgraphBuild },
+      { version: diff.currentClickgraphVersion, build: diff.currentClickgraphBuild },
     ),
     command: 'diff',
     url: current.baseUrl,

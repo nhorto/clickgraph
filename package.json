@@ -8,8 +8,8 @@
   },
   "main": "./dist/index.js",
   "scripts": {
-    "build": "node scripts/check-version.mjs && tsc",
-    "dev": "tsc --watch",
+    "build": "node scripts/check-version.mjs && node scripts/stamp-build.mjs && tsc",
+    "dev": "node scripts/stamp-build.mjs && tsc --watch",
     "fixture": "node fixture/server.js"
   },
   "engines": {

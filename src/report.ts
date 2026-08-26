@@ -1,6 +1,6 @@
 import type { GraphDiff, UIGraph, OutcomeKind } from './types.js';
 import { actionLabel, nodeLabel } from './graph.js';
-import { clickgraphVersionWarning } from './version.js';
+import { clickgraphProvenanceWarning } from './version.js';
 
 const c = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,
@@ -199,12 +199,12 @@ export function reportDiff(
   lines.push(c.dim(`  current  ${diff.currentWalkedAt}`));
   lines.push('');
 
-  const producerWarning = clickgraphVersionWarning(
-    diff.baselineClickgraphVersion,
-    diff.currentClickgraphVersion,
+  const producerWarning = clickgraphProvenanceWarning(
+    { version: diff.baselineClickgraphVersion, build: diff.baselineClickgraphBuild },
+    { version: diff.currentClickgraphVersion, build: diff.currentClickgraphBuild },
   );
   if (producerWarning && options.showVersionWarning !== false) {
-    lines.push(c.yellow(c.bold('Tool version note')));
+    lines.push(c.yellow(c.bold('Tool build note')));
     lines.push(`  ${producerWarning}`);
     lines.push('');
   }

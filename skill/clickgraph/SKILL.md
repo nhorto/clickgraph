@@ -127,9 +127,12 @@ greppable by `clickgraph-test`; say so if the user may need to clean them up.
 ## Reading the verdict
 
 `--json` prints a compact object, not the whole graph. Read `ok` and `verdict`
-first; they are the answer. Record `version` with the result. If a diff carries
-a `versionWarning`, its baseline was made by another clickgraph build (or by a
+first; they are the answer. Record `version` and `build` with the result —
+`build` is the commit clickgraph was compiled from, and it is the half that
+moves between two runs of the same release. If a diff carries a
+`versionWarning`, its baseline was made by another clickgraph build (or by a
 legacy build with no provenance), so some differences may be tooling changes.
+It never changes the verdict: a build difference is never a regression.
 
 From `walk`:
 
